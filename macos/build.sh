@@ -17,13 +17,15 @@ DATA_DIR="$MACOS_DIR/data"
 EXPORT_DIR="$MACOS_DIR/exports"
 WEB_ROOT="$ROOT"
 CLEAN=0
+INSTALL=0
 
 usage() {
   cat <<'EOF'
-사용법: ./build.sh [--port N] [--data-dir PATH] [--web-root DIR] [--clean]
+사용법: ./build.sh [--port N] [--data-dir PATH] [--web-root DIR] [--install] [--clean]
   --port N         앱 내장 서버 포트 (기본 38765)
   --data-dir PATH  로그인 정보·분석 기록을 둘 폴더 (기본 macos/data)
   --web-root DIR   앱에 넣을 웹 파일이 있는 폴더 (기본: 프로젝트 루트)
+  --install        빌드한 앱을 ~/Applications 에도 복사해 Spotlight 에서 실행할 수 있게 한다 (약 1.5MB, 데이터는 그대로 --data-dir)
   --clean          build/ 안의 빌드 중간 산출물만 지우고 끝낸다 (dist/ 의 앱과 data/ 는 그대로)
 EOF
 }
@@ -45,6 +47,7 @@ while [ $# -gt 0 ]; do
     --data-dir=*) DATA_DIR="${1#*=}"; shift ;;
     --web-root) need_value "$1" $#; WEB_ROOT="$2"; shift 2 ;;
     --web-root=*) WEB_ROOT="${1#*=}"; shift ;;
+    --install) INSTALL=1; shift ;;
     --clean) CLEAN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "알 수 없는 인자입니다: $1" ;;
@@ -187,3 +190,13 @@ mv "$STAGED_APP" "$DIST/"
 rmdir "$STAGE"
 echo "== 완료: $DIST/$APP_NAME.app (버전 $VERSION, 포트 $PORT, 데이터 $DATA_DIR)"
 du -sh "$DIST/$APP_NAME.app"
+
+if [ "$INSTALL" = 1 ]; then
+  INSTALL_DIR="$HOME/Applications"
+  mkdir -p "$INSTALL_DIR"
+  rm -rf "${INSTALL_DIR:?}/$APP_NAME.app"
+  cp -R "$DIST/$APP_NAME.app" "$INSTALL_DIR/"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALL_DIR/$APP_NAME.app"
+  mdimport "$INSTALL_DIR/$APP_NAME.app" 2>/dev/null || true
+  echo "== 설치: $INSTALL_DIR/$APP_NAME.app (Spotlight 에서 \"논문 함께 읽기\" 로 실행)"
+fi

@@ -18,6 +18,7 @@ cd /Volumes/RB/read_paper_together/macos
 | 옵션 | 뜻 |
 | --- | --- |
 | `--port N` | 앱 내장 서버 포트 (기본 `38765`) |
+| `--install` | `~/Applications` 에도 복사해 Spotlight 에서 "논문 함께 읽기" 로 바로 실행 (약 1.5MB, 데이터는 그대로 `macos/data`). /Volumes/RB 는 Spotlight 색인이 꺼져 있어 `dist/` 의 앱은 검색되지 않습니다. 다시 빌드할 때도 `--install` 을 붙이면 사본이 갱신됩니다. |
 | `--data-dir PATH` | 데이터 폴더 (기본 `macos/data`) |
 | `--web-root DIR` | 앱에 넣을 웹 파일 폴더 (기본: 프로젝트 루트) |
 | `--clean` | `macos/build` 안의 빌드 중간 산출물(`tmp`, `ModuleCache`, `obj`, `stage`, 아이콘 파일)만 지우고 끝냅니다. 앱과 데이터는 그대로 둡니다. |
