@@ -1,9 +1,8 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const API_BASE = 'https://api.openai.com';
-  // 플랜 토큰 요청은 api.openai.com이 CORS 허용 헤더를 주지 않아 브라우저가 응답을 읽지 못하므로 같은 주소의 serve.py 중계를 거친다
   const PROXY_PREFIX = '/__rpt/openai';
   const HEALTH_PATH = '/__rpt/health';
   const P = window.RPT_PROMPTS;
@@ -45,17 +44,15 @@
   const MODEL_EXCLUDE = /pro|realtime|audio|image|codex|search|transcribe|tts|chat-latest|-\d{4}-\d{2}-\d{2}$/;
   const MINIMAL_EFFORT_MODELS = /^gpt-5(-mini|-nano)?(-\d{4}-\d{2}-\d{2})?$/;
   const PARAM_ERROR = /reasoning|verbosity|effort|unsupported_parameter|unsupported_value/i;
-  // 플랜 라우트가 거부하면 빼고 다시 보낼 수 있는 선택 파라미터 경로. 그 밖의 경로(model, input, instructions 등)는 제거하면 요청이 성립하지 않는다
   const PLAN_OPTIONAL = /^(prompt_cache_key|stream_options(\.include_obfuscation)?|text(\.verbosity)?|input\[\d+\]\.content\[\d+\]\.detail)$/;
   const PDF_FETCH_ERROR = /file|url|download|fetch|pdf/i;
-  // 1M 토큰당 USD: [입력, 캐시 입력, 출력]
   const PRICES = {
     'gpt-5-nano': [0.05, 0.005, 0.40], 'gpt-5-mini': [0.25, 0.025, 2.00], 'gpt-5': [1.25, 0.125, 10],
     'gpt-5.1': [1.25, 0.125, 10], 'gpt-5.2': [1.75, 0.175, 14], 'gpt-5.4': [2.50, 0.25, 15],
     'gpt-5.4-mini': [0.75, 0.075, 4.50], 'gpt-5.4-nano': [0.20, 0.02, 1.25], 'gpt-5.5': [5, 0.50, 30],
     'gpt-5.6-luna': [0.20, 0.02, 1.20], 'gpt-5.6-terra': [2, 0.20, 12], 'gpt-4.1': [2, 0.50, 8]
   };
-  const MAX_TOKENS = { outline: 12000, summary: 32000, translate: 16000, translateRetry: 32000 };
+  const MAX_TOKENS = { outline: 12000, summary: 32000, ideas: 16000, translate: 16000, translateRetry: 32000 };
   const RETRY_DELAYS = [2000, 6000, 15000];
   const WATCHDOG_MS = 90000;
   const REASONING_WATCHDOG_MS = 300000;
@@ -82,6 +79,16 @@
     optimization: '최적화·효율화', inference: '추론 기법', evaluation: '평가 방법', theory: '이론적 분석',
     system_infra: '시스템·인프라', other: '기타'
   };
+  const IDEA_CATS = {
+    limitation_fix: '한계 극복', extension: '확장·일반화', new_application: '새로운 응용', combination: '다른 연구와 결합',
+    efficiency: '효율화', analysis_theory: '분석·이론', dataset_benchmark: '데이터·벤치마크'
+  };
+  const IDEA_LEVELS = { low: '하', medium: '중', high: '상' };
+  const IDEAS_MAX = 10;
+  const SCHOLAR_URL = 'https://scholar.google.com/scholar?q=';
+  const IDEAS_INTRO = '이 논문을 바탕으로 GPT가 제안한 후속 연구 주제입니다. 이미 연구된 주제일 수 있으니 키워드로 선행 연구를 확인하세요.';
+  const TOC_THROTTLE_MS = 300;
+  const SCROLL_GAP = 12;
   const RADAR_AXES = [['novelty', '참신성'], ['clarity', '명확성'], ['rigor', '실험 엄밀성'], ['reproducibility', '재현성'], ['impact', '영향력']];
   const KATEX_DELIMS = [
     { left: '$$', right: '$$', display: true },
@@ -108,6 +115,9 @@
     reloadAbort: '페이지를 새로 고쳐 중단됨',
     storageFull: '브라우저 저장 공간이 부족해 결과를 저장하지 못했습니다. 기록을 정리해 주세요.',
     summaryParse: '요약 결과를 해석하지 못했습니다. 다시 시도해 주세요.',
+    summaryTruncated: '요약 결과가 출력 한도에 걸려 잘렸습니다. 추론 강도를 낮춰 다시 시도해 주세요.',
+    ideasParse: '주제 제안 결과를 해석하지 못했습니다. 다시 시도해 주세요.',
+    ideasTruncated: '주제 제안 결과가 출력 한도에 걸려 잘렸습니다. 추론 강도를 낮춰 다시 시도해 주세요.',
     reduceConcurrency: '동시 번역 수를 줄여 주세요',
     urlScheme: 'http 또는 https로 시작하는 링크를 입력해 주세요.',
     pdfOnly: 'PDF 파일만 올릴 수 있습니다.',
@@ -187,7 +197,7 @@
       try { localStorage.setItem(k, v); return { ok: true }; }
       catch (e) { return { ok: false, quota: !!e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) }; }
     },
-    remove(k) { try { localStorage.removeItem(k); } catch { /* 저장소 접근 불가 */ } },
+    remove(k) { try { localStorage.removeItem(k); } catch {} },
     keys() { try { return Object.keys(localStorage); } catch { return []; } }
   };
 
@@ -218,7 +228,6 @@
   }
 
   function serializeJob(job) {
-    // fileData(데이터 URL)는 메모리에만 두고 저장소에는 절대 쓰지 않는다
     return JSON.parse(JSON.stringify(job, (k, v) => ((k === 'blobUrl' || k === 'fileData') ? undefined : v)));
   }
   function readFileDataUrl(file) {
@@ -229,7 +238,6 @@
       r.readAsDataURL(file);
     });
   }
-  // 기록 목록에서 밀려나 보이지 않는 항목부터 비우고, 없으면 가장 오래된 기록을 지운다
   function evictOldestLocal(keepId) {
     const hist = store.loadHistory();
     const listed = new Set(hist.map((h) => h.id));
@@ -267,19 +275,19 @@
   const store = {
     async saveJob(job) {
       const data = serializeJob(job);
-      try { await idb('readwrite', (s) => s.put(data)); return true; } catch { /* IDB 불가 → localStorage */ }
+      try { await idb('readwrite', (s) => s.put(data)); return true; } catch {}
       return saveJobLocal(data);
     },
     async loadJob(id) {
-      try { const j = await idb('readonly', (s) => s.get(id)); if (j) return j; } catch { /* IDB 불가 */ }
+      try { const j = await idb('readonly', (s) => s.get(id)); if (j) return j; } catch {}
       return ls.get(LS.jobPrefix + id, null);
     },
     async deleteJob(id) {
-      try { await idb('readwrite', (s) => s.delete(id)); } catch { /* IDB 불가 */ }
+      try { await idb('readwrite', (s) => s.delete(id)); } catch {}
       ls.remove(LS.jobPrefix + id);
     },
     async clearJobs() {
-      try { await idb('readwrite', (s) => s.clear()); } catch { /* IDB 불가 */ }
+      try { await idb('readwrite', (s) => s.clear()); } catch {}
       for (const k of ls.keys()) if (k.startsWith(LS.jobPrefix)) ls.remove(k);
     },
     loadHistory() { const h = ls.get(LS.history, []); return Array.isArray(h) ? h : []; },
@@ -324,7 +332,11 @@
   };
   const renderTimers = new Map();
   const renderState = new Map();
-  let tocObserver = null;
+  const tocTimers = new Map();
+  const tocLast = new Map();
+  let spyFrame = 0;
+  let spyActive = null;
+  let scrollSeq = 0;
 
   function availableModels() {
     if (isPlan()) {
@@ -347,7 +359,6 @@
     const rank = (id) => { const i = MODEL_PREFS.indexOf(id); return i < 0 ? MODEL_PREFS.length : i; };
     return [...new Set(ids)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   }
-  // 문서 규격은 {models:[{slug, display_name, visibility}]}이지만 표준 {data:[{id}]} 형태가 와도 받아들인다
   function filterPlanModels(data) {
     if (data && Array.isArray(data.models)) {
       return data.models.filter((m) => m && typeof m.slug === 'string' && (m.visibility === 'list' || m.visibility == null)).map((m) => ({ id: m.slug, label: m.display_name || m.slug }));
@@ -484,9 +495,8 @@
   function isStripped(path) { return getStripped().includes(path); }
   function addStripped(path) {
     const a = getStripped();
-    if (!a.includes(path)) { a.push(path); try { sessionStorage.setItem(SS.stripped, JSON.stringify(a)); } catch { /* 세션 저장 불가 */ } }
+    if (!a.includes(path)) { a.push(path); try { sessionStorage.setItem(SS.stripped, JSON.stringify(a)); } catch {} }
   }
-  // 점·대괄호 경로(text.format, input[0].content[0].detail 등)를 따라가 마지막 키를 제거한다
   function deleteByPath(obj, path) {
     const keys = String(path).replace(/\[(\d+)\]/g, '.$1').split('.').filter((k) => k !== '');
     if (!keys.length) return;
@@ -499,7 +509,7 @@
   }
   function lenientJsonParse(text) {
     const t = stripFence(String(text || '').trim());
-    try { return JSON.parse(t); } catch { /* 아래에서 균형 괄호 추출 */ }
+    try { return JSON.parse(t); } catch {}
     const start = t.indexOf('{');
     if (start < 0) return null;
     let depth = 0, inStr = false, esc = false;
@@ -562,7 +572,6 @@
     if (!isLoopbackHttp()) return;
     setChatGPTBusy(true);
     $('gate-error').hidden = true;
-    // 중계가 없는 서버(python -m http.server)에서는 로그인해도 플랜 호출이 전부 실패하므로 OAuth를 시작하지 않는다
     if (!(await checkProxy())) { setChatGPTBusy(false); showGateError(MSG.cgNoProxy); return; }
     try {
       const reg = getReg();
@@ -572,10 +581,9 @@
       const nonce = randB64url(32);
       const redirect = redirectUri();
       const clientId = reg && reg.clientId ? reg.clientId : CLIENT_DYNAMIC;
-      // 이전에 플랜 사용을 거부(권한 미허용)한 계정은 재동의를 요청한다
       const reconsent = o.reconsent || !!(reg && reg.planDeclined);
       const pending = { state: stateVal, nonce, verifier, redirectUri: redirect, clientId, returnHash: location.hash || '', startedAt: Date.now() };
-      try { sessionStorage.setItem(SS.pending, JSON.stringify(pending)); } catch { /* 세션 저장 불가 */ }
+      try { sessionStorage.setItem(SS.pending, JSON.stringify(pending)); } catch {}
       const q = new URLSearchParams();
       q.set('client_id', clientId);
       if (clientId === CLIENT_DYNAMIC) q.set('agent_name_hint', AGENT_NAME);
@@ -599,7 +607,7 @@
 
   async function oauthError(res) {
     let body = null;
-    try { body = await res.json(); } catch { /* 본문 없음 */ }
+    try { body = await res.json(); } catch {}
     const code = (body && (typeof body.error === 'string' ? body.error : (body.error && body.error.code))) || '';
     return new ApiError(`oauth ${res.status}`, { status: res.status, code });
   }
@@ -642,7 +650,6 @@
     if (tok.earliestRefreshAt && now < tok.earliestRefreshAt && now < (tok.expiresAt || 0)) return false;
     return true;
   }
-  // 잠금 안에서 저장소를 다시 읽는다. staleBearer는 서버가 거부한 접근 토큰으로, 아직 저장된 것과 같을 때만 만료 전이라도 갱신한다
   async function rotateTokens(staleBearer) {
     const tok = getTokens();
     if (!tok || !tok.refreshToken) throw new ApiError(MSG.cgExpired, { status: 401, code: 'no_token' });
@@ -654,7 +661,6 @@
     body.set('client_id', clientId || '');
     body.set('refresh_token', tok.refreshToken);
     body.set('resource', OAUTH_RESOURCE);
-    // 호출자의 중단 신호를 넘기지 않는다: 서버가 이미 회전한 교체 토큰을 받지 못하면 저장된 토큰이 죽는다
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), REFRESH_TIMEOUT_MS);
     let res;
@@ -675,7 +681,6 @@
     }
     const data = await res.json();
     const cur = getTokens();
-    // 요청 중 로그아웃됐거나 다른 세션으로 바뀌었으면 결과를 버리고 교체 토큰도 폐기한다
     if (!cur || cur.refreshToken !== tok.refreshToken) {
       if (data.refresh_token) revokeToken(data.refresh_token, clientId || '');
       return;
@@ -692,7 +697,6 @@
     });
   }
   let refreshPromise = null;
-  // 동시 호출은 하나의 갱신을 공유하고, 갱신 자체는 취소되지 않는다. 호출자가 중단됐으면 결과와 무관하게 중단 오류를 돌려준다
   async function refreshTokens(signal, staleBearer) {
     const aborted = () => !!(signal && signal.aborted);
     if (aborted()) throw abortError(signal.reason);
@@ -700,7 +704,7 @@
       const run = () => rotateTokens(staleBearer);
       const p = Promise.resolve().then(() => ((navigator.locks && navigator.locks.request) ? navigator.locks.request(REFRESH_LOCK, run) : run()));
       refreshPromise = p;
-      p.finally(() => { if (refreshPromise === p) refreshPromise = null; }).catch(() => { /* 호출자가 처리 */ });
+      p.finally(() => { if (refreshPromise === p) refreshPromise = null; }).catch(() => {});
     }
     try { await refreshPromise; }
     catch (e) { if (aborted()) throw abortError(signal.reason); throw e; }
@@ -733,7 +737,7 @@
     const o = opts || {};
     ls.remove(LS.cgTokens);
     if (o.dropReg) ls.remove(LS.cgReg);
-    try { sessionStorage.removeItem(SS.stripped); } catch { /* 세션 접근 불가 */ }
+    try { sessionStorage.removeItem(SS.stripped); } catch {}
   }
   async function logoutChatGPT() {
     const tok = getTokens();
@@ -752,10 +756,10 @@
     const cbClientId = params.get('client_id');
     let pending = null;
     try { pending = JSON.parse(sessionStorage.getItem(SS.pending) || 'null'); } catch { pending = null; }
-    try { sessionStorage.removeItem(SS.pending); } catch { /* 세션 접근 불가 */ }
+    try { sessionStorage.removeItem(SS.pending); } catch {}
     const appBase = location.pathname;
     const returnHash = pending && pending.returnHash ? pending.returnHash : '';
-    const cleanUrl = () => { try { history.replaceState(null, '', appBase + returnHash); } catch { /* 히스토리 접근 불가 */ } };
+    const cleanUrl = () => { try { history.replaceState(null, '', appBase + returnHash); } catch {} };
     if (!pending || !stateParam || stateParam !== pending.state || (pending.startedAt && Date.now() - pending.startedAt > PENDING_TTL_MS)) {
       cleanUrl(); openGate(MSG.cgState); return;
     }
@@ -763,13 +767,11 @@
     if (error) { openGate(error === 'access_denied' ? MSG.cgDenied : MSG.cgExchange); return; }
     if (!code) { openGate(MSG.cgState); return; }
     const reg = getReg();
-    // 교환에는 인가 요청에 쓴 client_id를 그대로 쓴다. 첫 등록이면 콜백이 발급한 id를 받는다
     const issuedClientId = pending.clientId !== CLIENT_DYNAMIC ? pending.clientId : cbClientId;
     if (!issuedClientId || issuedClientId === CLIENT_DYNAMIC) { openGate(MSG.cgExchange); return; }
     if ((cbClientId && cbClientId !== issuedClientId) || (reg && reg.clientId && issuedClientId !== reg.clientId)) { openGate(MSG.cgMismatch); return; }
     let tok = null;
     let stored = false;
-    // 저장하지 않고 버리는 토큰은 서버에서도 폐기한다
     const discard = () => { if (tok && tok.refresh_token && !stored) revokeToken(tok.refresh_token, issuedClientId); };
     try {
       tok = await exchangeCode(code, pending, issuedClientId);
@@ -779,9 +781,7 @@
       const scopes = String(tok.scope || '').split(/\s+/).filter(Boolean);
       const hasPlan = scopes.includes(PLAN_SCOPE);
       const prevTok = getTokens();
-      // welcomed는 토큰 기록에 저장하지만 로그아웃 후 재로그인에도 유지되도록 등록 기록에도 남긴다
       const wasWelcomed = !!((prevTok && prevTok.welcomed) || (reg && reg.welcomed));
-      // 권한이 없어도 발급된 client_id와 신원은 등록으로 저장해, 재동의를 같은 계정으로 진행한다
       ls.set(LS.cgReg, {
         clientId: issuedClientId, subject: claims.sub,
         email: claims.email || (reg && reg.email) || '', name: claims.name || (reg && reg.name) || '',
@@ -800,7 +800,6 @@
       toast('로그인되었습니다');
     } catch {
       discard();
-      // 첫 등록의 교환이 실패해도 발급된 client_id는 남겨, 다음 시도가 앱을 다시 등록하지 않고 같은 id로 로그인하게 한다
       if (pending.clientId === CLIENT_DYNAMIC && cbClientId && !getReg()) ls.set(LS.cgReg, { clientId: cbClientId, subject: '', email: '', name: '', registeredAt: Date.now() });
       openGate(MSG.cgExchange);
     }
@@ -813,13 +812,12 @@
   }
   function showWelcome() {
     const dlg = $('welcome');
-    if (dlg && !dlg.open && typeof dlg.showModal === 'function') { try { dlg.showModal(); } catch { /* 표시 실패 무시 */ } }
+    if (dlg && !dlg.open && typeof dlg.showModal === 'function') { try { dlg.showModal(); } catch {} }
   }
 
   async function readErrorBody(res, plan) {
     let body = null;
-    try { body = await res.json(); } catch { /* 본문 없음 */ }
-    // 중계 기능이 없는 정적 서버는 플랜 경로(/__rpt/openai/…)에 JSON이 아닌 HTML을 돌려준다: GET은 404, POST·DELETE는 405 또는 501(python -m http.server)
+    try { body = await res.json(); } catch {}
     if (plan && body == null && (res.status === 404 || res.status === 405 || res.status === 501)) {
       state.proxyOk = false;
       return new ApiError(MSG.cgNoProxy, { status: res.status, code: 'no_proxy' });
@@ -851,7 +849,6 @@
     };
     let bearer = plan ? await ensureAccessToken(o.signal) : state.apiKey;
     let res = await doFetch(bearer);
-    // 플랜 모드에서 401이면 거부된 토큰을 한 번 갱신하고 재시도한다
     if (res.status === 401 && plan) {
       bearer = await ensureAccessToken(o.signal, bearer);
       res = await doFetch(bearer);
@@ -880,7 +877,7 @@
     return { text, response: resp, truncated: resp.status === 'incomplete', reason: details.reason || '', usage: resp.usage || null };
   }
 
-  // 한 번의 HTTP 시도: 부모 신호 연동 + 90초 무이벤트 워치독 + SSE 파싱
+  // Single HTTP attempt with an idle watchdog and SSE parsing.
   async function runAttempt(body, opts) {
     const parentSignal = opts.parentSignal;
     if (parentSignal.aborted) throw abortError(parentSignal.reason);
@@ -890,7 +887,6 @@
     if (opts.onController) opts.onController(ctl);
     let timer = null;
     let textSeen = false;
-    // 추론 단계에는 텍스트 이벤트가 없으므로 첫 텍스트 전까지는 더 긴 대기 시간을 둔다
     const touch = () => { clearTimeout(timer); timer = setTimeout(() => ctl.abort(ABORT_WATCHDOG), textSeen ? WATCHDOG_MS : (opts.initialWatchdogMs || WATCHDOG_MS)); };
     touch();
     try {
@@ -942,7 +938,6 @@
         if (ctl.signal.reason === ABORT_WATCHDOG && !parentSignal.aborted) throw new ApiError('응답이 오래 멈춰 연결을 끊었습니다.', { status: 0, code: 'timeout' });
         throw abortError(ctl.signal.reason);
       }
-      // 본문 수신 중 연결이 끊기면 브라우저는 TypeError를 던진다
       if (e instanceof TypeError) throw new ApiError(MSG.netLost, { status: 0, code: 'network' });
       throw e;
     } finally {
@@ -953,7 +948,6 @@
 
   function isRetryable(err) {
     if (!err || isAbort(err)) return false;
-    // 중계 없음은 서버를 바꿔야 풀리므로 501이어도 재시도하지 않는다
     if (err.code === 'no_proxy') return false;
     const s = err.status;
     if (typeof err.code === 'string' && err.code.indexOf('subscription_sharing_') === 0) {
@@ -964,7 +958,7 @@
     if (s === 408 || s === 409 || s >= 500) return true;
     return s === 0 && ['network', 'timeout', 'server_error', 'no_terminal'].includes(err.code);
   }
-  // 플랜 라우트가 거부한 파라미터 경로를 제거 가능한 경로로 정규화한다 (불가능하면 '')
+  // Maps a param the plan route rejected to a strippable path, or ''.
   function planStripPath(param) {
     const p = String(param || '');
     if (/^text\.format(\.|$)/.test(p)) return 'text.format';
@@ -975,7 +969,6 @@
     const signal = opts.signal;
     let stripped = false;
     let timedOut = false;
-    // 이번 호출에서 제거한 경로는 재시도가 성공한 뒤에야 세션 목록에 남긴다
     const strips = [];
     for (let attempt = 0; ; attempt++) {
       try {
@@ -985,7 +978,6 @@
       } catch (err) {
         if (isAbort(err) || (signal && signal.aborted)) throw err;
         if (err.status === 401) throw err;
-        // 플랜 라우트: 지원하지 않는 선택 파라미터를 제거하고 즉시 재시도 (같은 본문은 다시 보내지 않는다)
         if (opts.plan && err.status === 400 && err.code === 'subscription_sharing_unsupported_capability') {
           if (err.param === 'model') throw new ApiError(MSG.cgModelUnsupported, { status: 400, code: 'model_unsupported' });
           const path = planStripPath(err.param);
@@ -1015,7 +1007,6 @@
     if (isAbort(err)) return abortMessage(err.reason);
     const code = err.code || '';
     if (code === 'no_proxy') return MSG.cgNoProxy;
-    // serve.py가 api.openai.com에 연결하지 못한 502: 플랜 상태가 아니라 네트워크 문제다
     if (code === 'proxy_upstream') return MSG.network;
     if (code === 'subscription_sharing_usage_limit_exceeded') return MSG.cgLimit;
     if (code === 'subscription_sharing_user_not_eligible') return MSG.cgIneligible;
@@ -1056,12 +1047,11 @@
     return data.id;
   }
   function deleteFile(id) {
-    apiFetch(`/v1/files/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => { /* 삭제 실패는 무시 */ });
+    apiFetch(`/v1/files/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   }
   async function countPdfPages(file) {
     try {
       const text = new TextDecoder('latin1').decode(await file.arrayBuffer());
-      // 객체 스트림 안의 페이지 객체는 셀 수 없어 추정치가 실제보다 작아지므로 포기한다
       if (/\/ObjStm\b/.test(text)) return 0;
       const m = text.match(/\/Type\s*\/Page(?!s)/g);
       return m ? m.length : 0;
@@ -1093,7 +1083,7 @@
     if (!url) return { kind: 'unsupported', reason: MSG.urlScheme };
     url = url.replace(/^http:\/\//i, 'https://');
     const scholarRedirect = URL_RE.scholar.test(url) && /[?&]url=([^&]+)/.exec(url);
-    if (scholarRedirect) { try { url = decodeURIComponent(scholarRedirect[1]); } catch { /* 그대로 둠 */ } }
+    if (scholarRedirect) { try { url = decodeURIComponent(scholarRedirect[1]); } catch {} }
     if (URL_RE.paywalled.test(url)) return { kind: 'unsupported', reason: MSG.paywalled };
     if (URL_RE.scholar.test(url)) return { kind: 'unsupported', reason: MSG.scholar };
     let m = URL_RE.arxiv.exec(url);
@@ -1158,7 +1148,7 @@
       try {
         const head = await fetch(n.pdfUrl, { method: 'HEAD' });
         if (!head.ok) n = { ...n, pdfUrl: n.altPdfUrl };
-      } catch { /* CORS·네트워크 오류 시 기본 후보 유지 */ }
+      } catch {}
     }
     return n;
   }
@@ -1312,7 +1302,7 @@
     return m ? m[1] : t;
   }
   function normText(s) { return String(s || '').replace(/[#*_`>\s]+/g, ' ').trim().toLowerCase(); }
-  // 직후 섹션 제목이 결과에 섞여 들어오면 그 줄부터 잘라낸다
+  // Removes fences and neighbouring-section headings from a chunk's output.
   function cleanupChunkText(text, chunk) {
     const lines = stripFence(String(text || '').replace(/\r\n/g, '\n').trim()).split('\n');
     if (chunk.partIndex > 1 && /^#{1,6}\s/.test(lines[0] || '')) lines.shift();
@@ -1362,6 +1352,12 @@
     });
     return { out, saved };
   }
+  const CODE_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/;
+  const TIGHT_STRONG_RE = /\*\*(?=[^\s*])([^*\n]*?[\p{P}\p{S}])\*\*(?=[\p{L}\p{N}])/gu;
+  // Converts **bold** that CommonMark won't close before a letter into <strong>.
+  function fixTightStrong(text) {
+    return text.split(CODE_RE).map((part, i) => (i % 2 ? part : part.replace(TIGHT_STRONG_RE, '<strong>$1</strong>'))).join('');
+  }
   function plainHtml(src) {
     return src.split(/\n{2,}/).filter((p) => p.trim()).map((p) => `<p>${escapeHtml(p)}</p>`).join('');
   }
@@ -1370,10 +1366,47 @@
     if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined' || typeof DOMPurify.sanitize !== 'function') return plainHtml(src);
     const { out, saved } = protectMath(src);
     let html;
-    try { html = marked.parse(out, { gfm: true, breaks: false }); } catch { return plainHtml(src); }
+    try { html = marked.parse(fixTightStrong(out), { gfm: true, breaks: false }); } catch { return plainHtml(src); }
     if (typeof html !== 'string') return plainHtml(src);
-    html = DOMPurify.sanitize(html, { ADD_ATTR: ['target'], FORBID_TAGS: ['style', 'iframe', 'form'] });
+    html = DOMPurify.sanitize(html, { ADD_ATTR: ['target'], FORBID_TAGS: ['style', 'iframe', 'form'], FORBID_ATTR: ['id'] });
     return html.replace(/\uE000(\d+)\uE001/g, (_, i) => escapeHtml(saved[+i] || ''));
+  }
+  const LIST_ITEM_RE = /^( *)([-*+]|\d{1,9}[.)])( +)(?=\S)/;
+  function normalizeListIndent(text) {
+    const out = [];
+    const stack = [];
+    let fence = false;
+    let math = false;
+    let prevBlank = false;
+    for (const raw of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+      if (fence || math) {
+        if (fence && /^\s*(```|~~~)/.test(raw)) fence = false;
+        else if (math && (raw.match(/\$\$/g) || []).length % 2) math = false;
+        out.push(raw);
+        continue;
+      }
+      if (!raw.trim()) { prevBlank = true; out.push(raw); continue; }
+      const line = raw.replace(/^[ \t]+/, (ws) => ws.replace(/\t/g, '    '));
+      const body = line.trimStart();
+      const ind = line.length - body.length;
+      const m = LIST_ITEM_RE.exec(line);
+      if (m) while (stack.length && stack[stack.length - 1].mark >= ind) stack.pop();
+      else if (prevBlank) while (stack.length && stack[stack.length - 1].orig > ind) stack.pop();
+      const top = stack[stack.length - 1];
+      let at = ind;
+      if (top && ind >= top.orig) at = ind + top.now - top.orig;
+      else if (top && m) at = top.now;
+      if (m) {
+        const w = m[2].length + Math.min(m[3].length, 4);
+        stack.push({ mark: ind, orig: ind + w, now: at + w });
+      }
+      const fixed = ' '.repeat(at) + body;
+      if (/^(```|~~~)/.test(body)) fence = true;
+      else if ((body.match(/\$\$/g) || []).length % 2) math = true;
+      out.push(fixed);
+      prevBlank = false;
+    }
+    return out.join('\n');
   }
   function mountMarkdown(target, text) {
     target.innerHTML = renderMarkdown(text);
@@ -1384,8 +1417,11 @@
       t.replaceWith(w);
       w.append(t);
     }
+    typesetMath(target);
+  }
+  function typesetMath(target) {
     if (!state.rawMath && typeof renderMathInElement === 'function') {
-      try { renderMathInElement(target, KATEX_OPTS); } catch { /* 수식 원문 유지 */ }
+      try { renderMathInElement(target, KATEX_OPTS); } catch {}
     }
   }
 
@@ -1426,6 +1462,8 @@
     }
     card.querySelector('.md--tail').innerHTML = renderMarkdown(chunk.text.slice(split));
     chunk.dirty = false;
+    tocHeadings(card, chunk);
+    scheduleTocSub(job, chunk);
   }
   function flushDirtyRenders() {
     const job = currentJob();
@@ -1436,6 +1474,7 @@
 
   const OUTLINE_FORMAT = { type: 'json_schema', name: 'paper_outline', strict: true, schema: P.OUTLINE_SCHEMA };
   const SUMMARY_FORMAT = { type: 'json_schema', name: 'paper_summary', strict: true, schema: P.SUMMARY_SCHEMA };
+  const IDEAS_FORMAT = { type: 'json_schema', name: 'paper_ideas', strict: true, schema: P.IDEAS_SCHEMA };
   const fileCache = new Map();
 
   function makeSemaphore(n) {
@@ -1452,28 +1491,25 @@
   }
   function track(job, run, promise) {
     run.active++;
-    promise.catch(() => { /* 각 작업이 자체 처리 */ }).finally(() => {
+    promise.catch(() => {}).finally(() => {
       run.active--;
       if (run.active === 0) finalizeJob(job, run);
     });
   }
   function abEffort(job) { return job.effort === 'none' ? 'low' : job.effort; }
   function mapEffort(model, effort) { return effort === 'none' && MINIMAL_EFFORT_MODELS.test(model) ? 'minimal' : effort; }
-  // 요청 형태는 작업에 기록된 모드(job.planMode)를 따른다. ensureRun이 현재 로그인 방식과 맞춰 둔다
   function filePart(job) {
     const s = job.source;
     if (s.type !== 'file') return { type: 'input_file', file_url: s.pdfUrl, detail: 'low' };
     if (job.planMode) return { type: 'input_file', filename: s.fileName || 'paper.pdf', file_data: s.fileData || '', detail: 'low' };
     return { type: 'input_file', file_id: s.fileId, detail: 'low' };
   }
-  // 캐시 적중을 위해 A/B/C 모두 [파일, 공통 규칙(+용어집), 호출별 프롬프트] 순서를 유지한다
   function buildBody(job, task, o) {
     const plan = job.planMode;
     const common = o.glossaryStr != null ? `${P.COMMON_RULES}\n\n[용어집]\n${o.glossaryStr}` : P.COMMON_RULES;
     const stripped = plan ? [...getStripped(), ...(o.strips || [])] : [];
     const formatStripped = plan && o.format && (stripped.includes('text.format') || stripped.includes('text'));
     let perCall = o.perCall;
-    // text.format이 거부된 구조화 호출은 프롬프트로 JSON 스키마를 지시한다
     if (formatStripped) perCall = `${perCall}\n\n아래 JSON 스키마에 맞는 JSON 객체 하나만 출력하세요. 코드 펜스나 설명 없이 JSON만 출력합니다.\n${JSON.stringify(o.format.schema)}`;
     const body = {
       model: job.model,
@@ -1495,7 +1531,6 @@
       if (o.verbosity) text.verbosity = o.verbosity;
     }
     if (Object.keys(text).length) body.text = text;
-    // 플랜 라우트에서 거부된 파라미터 경로를 제거하고, 그래서 비어 버린 객체도 보내지 않는다
     for (const path of stripped) deleteByPath(body, path);
     if (stripped.length) for (const k of ['reasoning', 'text', 'stream_options']) if (body[k] && !Object.keys(body[k]).length) delete body[k];
     return body;
@@ -1521,7 +1556,6 @@
     const plan = !!(job && job.planMode);
     if (err.status === 401 || (plan && err.code === 'subscription_sharing_invalid_user')) { handleAuthFailure(); return; }
     if (plan) {
-      // 한도·모델 오류는 첫 호출만 실행을 멈추고 알린다. 이미 중단된 뒤 도착한 같은 오류는 조용히 지나간다
       if (err.code === 'subscription_sharing_usage_limit_exceeded') {
         job.limitHit = true;
         if (!run.abort.signal.aborted) { run.abort.abort(ABORT_PLAN_LIMIT); renderProgress(job); toast(MSG.cgLimit, 'error'); }
@@ -1585,6 +1619,7 @@
       includeAppendix: $('include-appendix').checked, planMode: isPlan(),
       state: 'outlining', error: null, outline: null, glossaryStr: '', chunks: [],
       summaryStatus: 'pending', summary: null, summaryError: null,
+      ideasStatus: 'pending', ideas: null, ideasError: null,
       usage: { input: 0, cached: 0, output: 0, calls: 0 }, cacheKey: '', pageHint: 0
     };
     job.modelLabel = modelLabel(job.model);
@@ -1608,12 +1643,14 @@
       renderJob(job);
       persist(job);
       track(job, run, runSummary(job, run));
+      track(job, run, runIdeas(job, run));
       for (const chunk of queueOrder(job.chunks)) if (chunk.status === 'pending') track(job, run, runChunk(job, run, chunk));
     } catch (err) {
       if (isAbort(err)) { run.cancelled = err.reason !== ABORT_QUOTA; job.state = 'cancelled'; }
       else { job.state = 'failed'; handleCallError(run, err); }
       job.error = { code: errorCode(err), message: errorMessage(err) };
       renderSummary(job);
+      renderIdeas(job);
       renderProgress(job);
       renderHeader(job);
     }
@@ -1668,27 +1705,31 @@
     }
     return run.uploadPromise;
   }
-  async function runSummary(job, run) {
+  async function structuredCall(job, run, task, o) {
     const signal = run.abort.signal;
+    const makeBody = (r, low) => buildBody(job, task, {
+      perCall: o.perCall, glossaryStr: job.glossaryStr, stream: true, format: o.format,
+      verbosity: low ? 'low' : 'medium', effort: low ? 'low' : abEffort(job), maxTokens: o.maxTokens, stripParams: r.stripParams, strips: r.strips
+    });
+    const retryOpts = { signal, plan: job.planMode, onRetry: (e) => noteRetry(job, run, e) };
+    const attempt = (low) => withRetry((r) => runAttempt(makeBody(r, low), { parentSignal: signal, initialWatchdogMs: REASONING_WATCHDOG_MS }), retryOpts);
+    await ensureUploaded(job, run);
+    let r = await attempt(false);
+    addUsage(job, r.usage);
+    if (r.truncated && r.reason === 'max_output_tokens') {
+      r = await attempt(true);
+      addUsage(job, r.usage);
+    }
+    if (r.truncated) throw new ApiError(o.truncatedMsg, { status: 0, code: 'truncated' });
+    return parseStructured(job, r.text);
+  }
+  async function runSummary(job, run) {
     job.summaryStatus = 'running';
     job.summaryError = null;
     renderSummary(job);
     renderProgress(job);
-    const makeBody = (o, low) => buildBody(job, 'summary', {
-      perCall: P.buildSummaryPrompt(job.glossaryStr), glossaryStr: job.glossaryStr, stream: true, format: SUMMARY_FORMAT,
-      verbosity: low ? 'low' : 'medium', effort: low ? 'low' : abEffort(job), maxTokens: MAX_TOKENS.summary, stripParams: o.stripParams, strips: o.strips
-    });
-    const retryOpts = { signal, plan: job.planMode, onRetry: (e) => noteRetry(job, run, e) };
     try {
-      await ensureUploaded(job, run);
-      let r = await withRetry((o) => runAttempt(makeBody(o, false), { parentSignal: signal, initialWatchdogMs: REASONING_WATCHDOG_MS }), retryOpts);
-      addUsage(job, r.usage);
-      if (r.truncated && r.reason === 'max_output_tokens') {
-        r = await withRetry((o) => runAttempt(makeBody(o, true), { parentSignal: signal, initialWatchdogMs: REASONING_WATCHDOG_MS }), retryOpts);
-        addUsage(job, r.usage);
-      }
-      if (r.truncated) throw new ApiError('요약 결과가 출력 한도에 걸려 잘렸습니다. 추론 강도를 낮춰 다시 시도해 주세요.', { status: 0, code: 'truncated' });
-      const parsed = parseStructured(job, r.text);
+      const parsed = await structuredCall(job, run, 'summary', { perCall: P.buildSummaryPrompt(job.glossaryStr), format: SUMMARY_FORMAT, maxTokens: MAX_TOKENS.summary, truncatedMsg: MSG.summaryTruncated });
       if (!parsed || typeof parsed !== 'object') throw new ApiError(MSG.summaryParse, { status: 0, code: 'parse' });
       job.summary = parsed;
       job.summaryStatus = 'done';
@@ -1698,6 +1739,26 @@
       handleCallError(run, err);
     }
     renderSummary(job);
+    renderProgress(job);
+    renderHeader(job);
+    persist(job);
+  }
+  async function runIdeas(job, run) {
+    job.ideasStatus = 'running';
+    job.ideasError = null;
+    renderIdeas(job);
+    renderProgress(job);
+    try {
+      const parsed = await structuredCall(job, run, 'ideas', { perCall: P.buildIdeasPrompt(), format: IDEAS_FORMAT, maxTokens: MAX_TOKENS.ideas, truncatedMsg: MSG.ideasTruncated });
+      if (!ideasView(parsed).ideas.length) throw new ApiError(MSG.ideasParse, { status: 0, code: 'parse' });
+      job.ideas = parsed;
+      job.ideasStatus = 'done';
+    } catch (err) {
+      job.ideasStatus = 'failed';
+      job.ideasError = errorMessage(err);
+      handleCallError(run, err);
+    }
+    renderIdeas(job);
     renderProgress(job);
     renderHeader(job);
     persist(job);
@@ -1732,7 +1793,6 @@
     if (/^#{1,6}\s/.test(lines[0] || '')) lines.shift();
     return dropOverlap(base, lines.join('\n').trim());
   }
-  // 출력 한도로 잘리면 남은 페이지 범위를 절반씩 줄여 이어서 번역한다
   async function translateWhole(job, run, chunk) {
     let base = '';
     let from = chunk.startPage;
@@ -1742,7 +1802,6 @@
       const maxTokens = bigRetried && from >= to ? MAX_TOKENS.translateRetry : MAX_TOKENS.translate;
       const r = await translateRange(job, run, chunk, from, to, base, maxTokens);
       const piece = from === chunk.startPage ? r.text : continuationPiece(base, r.text);
-      // 출력 한도가 아닌 이유(content_filter 등)로 끊긴 응답은 다시 요청해도 같으므로 그대로 마친다
       const stoppedOtherwise = r.truncated && r.reason && r.reason !== 'max_output_tokens';
       if (!r.truncated || stoppedOtherwise) {
         base += piece;
@@ -1751,7 +1810,6 @@
       }
       chunk.truncated = true;
       if (from >= to) {
-        // 플랜 모드는 출력 상한을 못 올리므로 같은 요청을 되풀이하지 않는다
         if (bigRetried || job.planMode) { base += piece; chunk.truncatedFinal = true; break; }
         bigRetried = true;
         continue;
@@ -1825,7 +1883,7 @@
     for (const c of job.chunks) if (c.status === 'running' || c.status === 'retrying') { c.status = 'failed'; c.error = abortText; c.errorCode = '중단'; }
     if (job.state !== 'failed' && job.state !== 'cancelled') {
       if (run.cancelled) job.state = 'cancelled';
-      else if (failed.length || job.summaryStatus === 'failed') job.state = failed.length === active.length && job.summaryStatus !== 'done' ? 'failed' : 'partial';
+      else if (failed.length || job.summaryStatus === 'failed' || job.ideasStatus === 'failed') job.state = failed.length === active.length && job.summaryStatus !== 'done' && job.ideasStatus !== 'done' ? 'failed' : 'partial';
       else job.state = 'done';
     }
     job.finishedAt = Date.now();
@@ -1833,6 +1891,7 @@
     renderProgress(job);
     renderHeader(job);
     renderToc(job);
+    renderIdeas(currentJob());
     await persist(job);
     if (job.source.type === 'file' && !job.planMode && job.source.fileId && !job.source.fileDeleted && job.state === 'done') {
       deleteFile(job.source.fileId);
@@ -1847,7 +1906,7 @@
     run.abort.abort(ABORT_USER);
     toast('분석을 중단했습니다');
   }
-  // 다른 로그인 방식으로 시작한 작업은 현재 방식에 맞춰 모델과 파일 준비물(file_id ↔ file_data)을 다시 정한다
+  // Re-picks model and file input when the sign-in mode has changed.
   function reconcileJobMode(job) {
     const plan = isPlan();
     const switched = !!job.planMode !== plan;
@@ -1876,6 +1935,7 @@
     for (const c of job.chunks) renderChunkStatus(job, c);
     renderProgress(job);
     renderHeader(job);
+    renderIdeas(job);
     return run;
   }
   function retryChunk(job, chunk) {
@@ -1889,16 +1949,24 @@
     const idle = !(state.run && state.run.jobId === job.id);
     const targets = queueOrder(job.chunks).filter((c) => c.status === 'failed' || (idle && c.status === 'pending'));
     const summaryFailed = job.summaryStatus === 'failed';
-    if (!targets.length && !summaryFailed) return;
+    const ideasFailed = job.ideasStatus === 'failed';
+    if (!targets.length && !summaryFailed && !ideasFailed) return;
     const run = ensureRun(job);
     if (!run) return;
     for (const c of targets) { c.shortRetried = false; track(job, run, runChunk(job, run, c)); }
     if (summaryFailed) track(job, run, runSummary(job, run));
+    if (ideasFailed) track(job, run, runIdeas(job, run));
   }
   function regenerateSummary(job) {
     const run = ensureRun(job);
     if (!run) return;
     track(job, run, runSummary(job, run));
+  }
+  function regenerateIdeas(job) {
+    if (job.ideasStatus === 'running') return;
+    const run = ensureRun(job);
+    if (!run) return;
+    track(job, run, runIdeas(job, run));
   }
   function reviveJob(job) {
     job.chunks = Array.isArray(job.chunks) ? job.chunks : [];
@@ -1908,6 +1976,7 @@
     if (job.state === 'outlining' || job.state === 'running') {
       for (const c of job.chunks) if (c.status === 'running' || c.status === 'retrying') { c.status = 'failed'; c.error = MSG.reloadAbort; c.errorCode = '중단'; }
       if (job.summaryStatus === 'running' || job.summaryStatus === 'pending') { job.summaryStatus = 'failed'; job.summaryError = MSG.reloadAbort; }
+      if (job.ideasStatus === 'running' || job.ideasStatus === 'pending') { job.ideasStatus = 'failed'; job.ideasError = MSG.reloadAbort; }
       job.state = job.outline ? 'partial' : 'failed';
       if (!job.outline) job.error = { code: '중단', message: MSG.reloadAbort };
     }
@@ -1921,6 +1990,7 @@
     renderProgress(job);
     renderSummary(job);
     renderTranslation(job);
+    renderIdeas(job);
     renderSourcePanel(job);
   }
   function renderHeader(job) {
@@ -1970,13 +2040,15 @@
     for (const li of $('stage-rail').children) li.dataset.state = stageState[li.dataset.stage] || 'pending';
     const bar = $('progress-bar');
     bar.dataset.indeterminate = job.state === 'outlining' ? '1' : '0';
-    const pct = job.outline ? Math.round(((n.done + (job.summaryStatus === 'done' ? 1 : 0)) / (n.active.length + 1)) * 100) : 0;
+    const ideasUnit = job.ideasStatus === undefined ? 0 : 1;
+    const doneUnits = n.done + (job.summaryStatus === 'done' ? 1 : 0) + (job.ideasStatus === 'done' ? 1 : 0);
+    const pct = job.outline ? Math.round((doneUnits / (n.active.length + 1 + ideasUnit)) * 100) : 0;
     $('progress-fill').style.width = `${pct}%`;
     if (bar.dataset.indeterminate === '1') { bar.removeAttribute('aria-valuenow'); bar.setAttribute('aria-valuetext', '논문 구조를 파악하는 중'); }
     else { bar.removeAttribute('aria-valuetext'); bar.setAttribute('aria-valuenow', String(pct)); }
     let text;
     if (job.state === 'outlining') text = '논문 구조를 파악하는 중…';
-    else if (job.state === 'running') text = n.busy || n.done < n.active.length ? `번역 중 · ${n.done}/${n.active.length} 섹션 완료` : '요약을 만드는 중…';
+    else if (job.state === 'running') text = n.busy || n.done < n.active.length ? `번역 중 · ${n.done}/${n.active.length} 섹션 완료` : finishingText(job);
     else if (job.state === 'done') text = `완료 · ${n.active.length}개 섹션 · ${fmtDuration((job.finishedAt || Date.now()) - (job.startedAt || job.createdAt))}`;
     else if (job.state === 'partial') text = '일부 실패 · 실패한 섹션을 다시 시도해 주세요';
     else if (job.state === 'cancelled') text = '중단됨 · 완료된 섹션은 저장되었습니다';
@@ -1985,13 +2057,19 @@
     renderChips(job);
     $('limit-card').hidden = !job.limitHit;
     $('btn-cancel').hidden = !running;
-    $('btn-retry-all').hidden = running || !(n.failed || n.pending || job.summaryStatus === 'failed');
+    $('btn-retry-all').hidden = running || !(n.failed || n.pending || job.summaryStatus === 'failed' || job.ideasStatus === 'failed');
     $('btn-retry-failed').hidden = running || !(n.failed || n.pending);
     $('btn-summary-retry').disabled = running;
     const toggle = $('btn-progress-toggle');
     if (running) { strip.dataset.collapsed = '0'; toggle.hidden = true; }
     else { toggle.hidden = false; strip.dataset.collapsed = strip.dataset.userExpanded === '1' ? '0' : '1'; }
     toggle.textContent = strip.dataset.collapsed === '1' ? '자세히' : '접기';
+  }
+  function finishingText(job) {
+    const summary = job.summaryStatus === 'running' || job.summaryStatus === 'pending';
+    const ideas = job.ideasStatus === 'running' || job.ideasStatus === 'pending';
+    if (summary && ideas) return '요약과 주제 제안을 만드는 중…';
+    return ideas ? '주제 제안을 만드는 중…' : '요약을 만드는 중…';
   }
   function shortTitle(c) {
     const first = c.sections[0];
@@ -2027,11 +2105,42 @@
   function scrollToChunk(job, c) {
     selectTab('translation');
     const card = cardEl(c.id);
-    if (card) card.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    if (card) scrollToNode(card);
+  }
+  function stickyOffset() {
+    const bar = document.querySelector('.topbar');
+    let h = bar ? bar.offsetHeight : 56;
+    const strip = $('progress-strip');
+    if (strip && !$('view-result').hidden && getComputedStyle(strip).position === 'sticky') h += strip.offsetHeight;
+    return h;
+  }
+  function readingLine() { return stickyOffset() + SCROLL_GAP + 8; }
+  function scrollToNode(node) {
+    const seq = ++scrollSeq;
+    const target = () => {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      return clamp(Math.round(node.getBoundingClientRect().top + window.scrollY - stickyOffset() - SCROLL_GAP), 0, Math.max(0, max));
+    };
+    const smooth = !reducedMotion();
+    window.scrollTo({ top: target(), behavior: smooth ? 'smooth' : 'auto' });
+    const done = new AbortController();
+    const settle = () => {
+      if (done.signal.aborted) return;
+      done.abort();
+      if (seq !== scrollSeq) return;
+      const t = target();
+      if (Math.abs(window.scrollY - t) > 2) window.scrollTo({ top: t, behavior: 'auto' });
+    };
+    if (!smooth) { requestAnimationFrame(settle); return; }
+    const opts = { signal: done.signal, passive: true };
+    window.addEventListener('scrollend', settle, opts);
+    for (const type of ['wheel', 'touchstart', 'keydown']) window.addEventListener(type, () => done.abort(), opts);
+    setTimeout(settle, 1500);
   }
 
   function toView(s) {
     const str = (x) => (typeof x === 'string' ? x : '');
+    const md = (x) => normalizeListIndent(str(x));
     const arr = (x) => (Array.isArray(x) ? x : []);
     const strs = (x) => arr(x).filter((v) => typeof v === 'string' && v.trim());
     const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
@@ -2048,8 +2157,8 @@
       tldr: str(s.tldr_ko),
       glance: { problem: str(glance.problem), method: str(glance.method), result: str(glance.result) },
       sections: {
-        problem_definition: str(sections.problem_definition), proposed_method: str(sections.proposed_method), results_and_strengths: str(sections.results_and_strengths),
-        weaknesses_and_limitations: str(sections.weaknesses_and_limitations), core_technology: str(sections.core_technology)
+        problem_definition: md(sections.problem_definition), proposed_method: md(sections.proposed_method), results_and_strengths: md(sections.results_and_strengths),
+        weaknesses_and_limitations: md(sections.weaknesses_and_limitations), core_technology: md(sections.core_technology)
       },
       strengths: strs(s.strengths),
       limitations: [...strs(lim.weaknesses), ...strs(lim.stated_limitations)],
@@ -2065,6 +2174,8 @@
       meta: s.meta && typeof s.meta === 'object' ? s.meta : {}
     };
   }
+  function isEnglish(text) { return !!String(text || '').trim() && !/[\u3131-\u318e\uac00-\ud7a3]/.test(text); }
+  function setLang(node, text) { if (isEnglish(text)) node.lang = 'en'; else node.removeAttribute('lang'); }
   function renderAuthors(target, authors) {
     clear(target);
     if (!authors.length) return;
@@ -2100,6 +2211,7 @@
       target.classList.toggle('dim', dim);
       if (view) mountMarkdown(target, view.sections[key]); else clear(target);
     }
+    setLang($('md-tech'), view ? view.sections.core_technology : '');
     if (view) {
       renderPipeline(view);
       renderMetrics(view);
@@ -2197,10 +2309,17 @@
       'aria-label': `${word}, ${abs} ${d > 0 ? '상승' : '하락'}`, text: `${d > 0 ? '▲' : '▼'} ${word} ${d > 0 ? '+' : '−'}${abs}${rel}`
     });
   }
-  function metricRow(m) {
+  // Bar scale for metric rows without a baseline
+  function soloScale(m, rows) {
+    if (/%/.test(m.unit || '') && m.ours <= 100) return 100;
+    if (m.ours >= 0 && m.ours <= 1) return 1;
+    const peers = (rows || []).filter((r) => r.baseline == null && r.ours != null && r.name === m.name).map((r) => r.ours);
+    return Math.max(m.ours, ...peers);
+  }
+  function metricRow(m, _i, rows) {
     const fmt = (v) => (v == null ? '—' : String(v));
     const unitEl = () => (m.unit && m.unit !== '-' ? el('span', { class: 'unit', text: m.unit }) : null);
-    const maxv = Math.max(m.ours != null ? m.ours : 0, m.baseline != null ? m.baseline : 0);
+    const maxv = m.baseline == null && m.ours != null ? soloScale(m, rows) : Math.max(m.ours != null ? m.ours : 0, m.baseline != null ? m.baseline : 0);
     const width = (v) => (v == null || v <= 0 || maxv <= 0 ? 0 : Math.round((v / maxv) * 100));
     const barOurs = el('div', { class: 'bar bar--ours' });
     barOurs.style.width = `${width(m.ours)}%`;
@@ -2222,9 +2341,9 @@
     fig.append(el('figcaption', {}, el('strong', { text: '주요 성능 지표 · 제안 기법 vs 비교 기준' }), legend));
     if (!rows.length) { fig.append(el('p', { class: 'viz-empty', text: '논문에서 정량 수치를 추출하지 못했습니다. 본문 설명을 참고하세요.' })); return; }
     const tbody = el('tbody');
-    rows.forEach((m, i) => { const tr = metricRow(m); tr.hidden = i >= 8; tbody.append(tr); });
+    rows.forEach((m, i) => { const tr = metricRow(m, i, rows); tr.hidden = i >= 8; tbody.append(tr); });
     const table = el('table', { class: 'metrics-table' },
-      el('thead', {}, el('tr', {}, el('th', { class: 'name', text: '지표' }), el('th', { class: 'num', text: '비교 기준' }), el('th', { class: 'num', text: '제안 기법' }), el('th', { class: 'bar-cell', text: '비교 바', title: '행마다 큰 값을 100%로 표시' }), el('th', { text: '변화' }), el('th', { text: '출처' }))),
+      el('thead', {}, el('tr', {}, el('th', { class: 'name', text: '지표' }), el('th', { class: 'num', text: '비교 기준' }), el('th', { class: 'num', text: '제안 기법' }), el('th', { class: 'bar-cell', text: '비교 바', title: '비교 기준이 있으면 행마다 큰 값을 100%로, 없으면 제안 기법 값을 척도(0~1, 0~100% 또는 같은 지표의 최댓값) 기준으로 표시' }), el('th', { text: '변화' }), el('th', { text: '출처' }))),
       tbody);
     fig.append(el('div', { class: 'metrics-wrap table-wrap' }, table));
     if (rows.length > 8) {
@@ -2240,7 +2359,7 @@
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
   }
   function destroyRadar() {
-    if (state.radarChart) { try { state.radarChart.destroy(); } catch { /* 이미 해제됨 */ } state.radarChart = null; }
+    if (state.radarChart) { try { state.radarChart.destroy(); } catch {} state.radarChart = null; }
   }
   function buildRadar(canvas, view) {
     const css = getComputedStyle(document.documentElement);
@@ -2339,13 +2458,76 @@
     for (const [cat, items] of groups) {
       const wrap = el('div', { class: 'chip-wrap' });
       for (const t of items) {
-        const chip = el('button', { type: 'button', class: 'tech-chip', 'aria-expanded': 'false', title: t.desc.split(/(?<=\.)\s/)[0] || t.name, text: t.name });
-        const desc = el('div', { class: 'tech-desc', hidden: true }, t.role ? el('span', { class: 'role', text: t.role }) : null, t.desc);
+        const chip = el('button', { type: 'button', class: 'tech-chip', 'aria-expanded': 'false', title: t.desc.split(/(?<=\.)\s/)[0] || t.name, text: t.name, lang: isEnglish(t.name) ? 'en' : null });
+        const desc = el('div', { class: 'tech-desc', hidden: true, lang: isEnglish(t.role + t.desc) ? 'en' : null }, t.role ? el('span', { class: 'role', text: t.role }) : null, t.desc);
         chip.addEventListener('click', () => { const on = chip.getAttribute('aria-expanded') !== 'true'; chip.setAttribute('aria-expanded', String(on)); desc.hidden = !on; });
         wrap.append(chip, desc);
       }
       fig.append(el('section', { class: 'tech-group' }, el('h4', { class: 'tech-cat', text: TECH_CATS[cat] }), wrap));
     }
+  }
+
+  const hasKey = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+  // Normalizes raw model ideas for display, dropping malformed items.
+  function ideasView(raw) {
+    const o = raw && typeof raw === 'object' ? raw : {};
+    const str = (x) => (typeof x === 'string' ? x.trim() : '');
+    const strs = (x) => (Array.isArray(x) ? x.map(str).filter(Boolean) : []);
+    const ideas = (Array.isArray(o.ideas) ? o.ideas : []).filter((i) => i && typeof i === 'object' && str(i.title)).slice(0, IDEAS_MAX).map((i) => ({
+      title: str(i.title), category: hasKey(IDEA_CATS, i.category) ? i.category : '', level: hasKey(IDEA_LEVELS, i.difficulty) ? i.difficulty : '',
+      motivation: str(i.motivation), grounding: str(i.grounding), approach: str(i.approach), experiment: str(i.experiment),
+      impact: str(i.expected_impact), resources: str(i.resources), levelReason: str(i.difficulty_reason), keywords: strs(i.keywords_en)
+    }));
+    return { ideas, questions: strs(o.open_questions), notes: str(o.notes) };
+  }
+  function ideaTags(it) { return [it.category && IDEA_CATS[it.category], it.level && `난이도 ${IDEA_LEVELS[it.level]}`].filter(Boolean); }
+  function ideaBlocks(it) {
+    const lv = IDEA_LEVELS[it.level];
+    return [
+      ['배경과 근거', [{ text: it.motivation }, { text: it.grounding && `근거: ${it.grounding}`, kind: 'ground' }]],
+      ['접근 방법', [{ text: it.approach }]],
+      ['검증 실험', [{ text: it.experiment }]],
+      ['기대 효과', [{ text: it.impact }]],
+      ['필요 자원', [{ text: it.resources }, { text: lv && it.levelReason && `난이도 ${lv}: ${it.levelReason}`, kind: 'reason' }]]
+    ].map(([label, ps]) => [label, ps.filter((x) => x.text)]).filter(([, ps]) => ps.length);
+  }
+  function ideaCard(it, i) {
+    const cat = it.category ? el('span', { class: 'idea-chip', text: IDEA_CATS[it.category] }) : null;
+    const level = it.level ? el('span', { class: 'idea-chip idea-level', dataset: { level: it.level } },
+      el('span', { class: 'lv-bars', 'aria-hidden': 'true' }, el('i'), el('i'), el('i')), `난이도 ${IDEA_LEVELS[it.level]}`) : null;
+    const blocks = ideaBlocks(it).map(([label, ps]) => el('section', { class: 'idea-block' }, el('h5', { text: label }),
+      ps.map((x) => el('p', { class: x.kind ? `idea-${x.kind}` : null, text: x.text }))));
+    const kw = it.keywords.length ? el('ul', { class: 'idea-kw', 'aria-label': '키워드로 Google Scholar 검색' }, it.keywords.map((k) => el('li', {},
+      el('a', { class: 'ext', href: SCHOLAR_URL + encodeURIComponent(k), target: '_blank', rel: 'noopener noreferrer', lang: 'en', title: 'Google Scholar에서 검색', text: k })))) : null;
+    return el('article', { class: 'idea-card', 'aria-labelledby': `idea-${i + 1}` },
+      el('h4', { id: `idea-${i + 1}`, class: 'idea-title' }, el('span', { class: 'idea-num', text: String(i + 1) }), el('span', { text: it.title })),
+      cat || level ? el('div', { class: 'idea-chips' }, cat, level) : null,
+      blocks, kw);
+  }
+  function renderIdeas(job) {
+    if (!job || state.currentJobId !== job.id) return;
+    const box = clear($('ideas-body'));
+    const st = job.ideasStatus;
+    const action = (label) => el('button', { type: 'button', class: 'btn-secondary btn-sm', dataset: { ideasAction: 'generate' }, disabled: !!state.run, text: label });
+    const notice = (text, button, kind) => el('div', { class: `card ideas-state${kind ? ` ideas-state--${kind}` : ''}` }, el('p', { text }), button);
+    const view = ideasView(job.ideas);
+    if (st === undefined) { box.append(notice('이 분석에는 주제 제안이 없습니다.', action('주제 제안 만들기'))); return; }
+    if (st === 'running') { box.append(el('p', { class: 'ideas-loading', role: 'status' }, el('span', { class: 'spinner', 'aria-hidden': 'true' }), '주제 제안을 만드는 중…')); return; }
+    if (st === 'pending') {
+      const busy = job.state === 'outlining' || job.state === 'running';
+      box.append(notice(busy ? '논문 구조를 분석한 뒤 주제 제안을 만듭니다.' : '주제 제안이 생성되지 않았습니다.', !busy && job.outline ? action('주제 제안 만들기') : null));
+      return;
+    }
+    if (st === 'failed') box.append(notice(`주제 제안을 만들지 못했습니다. ${job.ideasError || ''}`.trim(), action('다시 만들기'), 'failed'));
+    else if (!view.ideas.length) { box.append(notice('주제 제안이 생성되지 않았습니다.', action('다시 만들기'))); return; }
+    if (!view.ideas.length) return;
+    box.append(el('header', { class: 'ideas-head' },
+      el('div', { class: 'ideas-head-text' }, el('h3', { text: `후속 연구 주제 ${view.ideas.length}개` }), el('p', { class: 'ideas-intro', text: IDEAS_INTRO })),
+      st === 'done' ? action('다시 만들기') : null));
+    box.append(el('div', { class: 'ideas-list' }, view.ideas.map(ideaCard)));
+    if (view.questions.length) box.append(el('section', { class: 'ideas-questions' }, el('h3', { text: '논문이 남긴 질문' }), el('ul', {}, view.questions.map((q) => el('li', { text: q })))));
+    if (view.notes) box.append(el('p', { class: 'ideas-notes' }, el('strong', { text: '참고' }), ' ', view.notes));
+    typesetMath(box);
   }
 
   function smallButton(label, cls, onClick) {
@@ -2417,33 +2599,154 @@
     const err = card.querySelector('.sc-error');
     renderState.delete(c.id);
     clear(tail);
-    if (c.status === 'running' || c.status === 'retrying') { clear(stable); err.hidden = true; if (c.text) renderStreaming(job, c); return; }
-    if (c.text) mountMarkdown(stable, c.text); else clear(stable);
-    err.hidden = c.status !== 'failed';
-    if (c.status === 'failed') err.querySelector('p').textContent = `번역에 실패했습니다 · ${c.error || ''}`;
+    if (c.status === 'running' || c.status === 'retrying') {
+      clear(stable);
+      err.hidden = true;
+      if (c.text) renderStreaming(job, c);
+    } else {
+      if (c.text) mountMarkdown(stable, c.text); else clear(stable);
+      err.hidden = c.status !== 'failed';
+      if (c.status === 'failed') err.querySelector('p').textContent = `번역에 실패했습니다 · ${c.error || ''}`;
+    }
+    refreshTocSub(job, c);
   }
   function renderToc(job) {
     if (state.currentJobId !== job.id) return;
-    const list = clear($('toc-list'));
-    for (const c of job.chunks) {
-      const a = el('a', { href: `#sec-${c.id}`, dataset: { sec: c.id } }, el('span', { class: 'dot', dataset: { status: c.status } }), el('span', { class: 'lbl', text: cardTitle(c) }));
-      a.addEventListener('click', (e) => { e.preventDefault(); scrollToChunk(job, c); });
-      list.append(el('li', {}, a));
+    const list = $('toc-list');
+    const items = [...list.children];
+    if (list.dataset.job !== job.id || items.length !== job.chunks.length || items.some((li, i) => li.dataset.sec !== job.chunks[i].id)) {
+      clear(list);
+      list.dataset.job = job.id;
+      for (const c of job.chunks) {
+        list.append(el('li', { dataset: { sec: c.id } },
+          el('a', { class: 'toc-link', href: `#sec-${c.id}`, dataset: { sec: c.id } }, el('span', { class: 'dot' }), el('span', { class: 'lbl' }))));
+      }
     }
-    setupTocObserver();
+    job.chunks.forEach((c, i) => {
+      const a = list.children[i].firstElementChild;
+      const title = cardTitle(c);
+      a.querySelector('.dot').dataset.status = c.status;
+      a.querySelector('.lbl').textContent = title;
+      a.title = title;
+      refreshTocSub(job, c);
+    });
+    scheduleSpy();
   }
-  function setupTocObserver() {
-    if (tocObserver) tocObserver.disconnect();
-    if (!('IntersectionObserver' in window)) return;
-    const cards = [...document.querySelectorAll('#tr-main .section-card')];
+  function headingLabel(h) {
+    const copy = h.cloneNode(true);
+    for (const k of copy.querySelectorAll('.katex')) {
+      const tex = k.querySelector('annotation[encoding="application/x-tex"]');
+      k.replaceWith(tex ? tex.textContent : k.textContent);
+    }
+    return copy.textContent.replace(/\$\$([^$]+)\$\$|\$([^$\n]+)\$|\\\((.+?)\\\)/g, (m, a, b, c) => a || b || c).replace(/\s+/g, ' ').trim();
+  }
+  function tocHeadings(card, c) {
+    if (c.status === 'failed') return [];
+    const items = [];
+    card.querySelectorAll('.md--stable > :is(h1, h2, h3, h4), .md--tail > :is(h1, h2, h3, h4)').forEach((h, i) => {
+      const level = Number(h.tagName[1]);
+      if (i === 0 && level <= 2) return;
+      const label = headingLabel(h);
+      if (!label) return;
+      h.id = `sec-${c.id}-h${items.length + 1}`;
+      h.tabIndex = -1;
+      items.push({ id: h.id, depth: level === 4 ? 2 : 1, label });
+    });
+    return items;
+  }
+  function refreshTocSub(job, c) {
+    clearTimeout(tocTimers.get(c.id));
+    tocTimers.delete(c.id);
+    tocLast.set(c.id, Date.now());
+    if (state.currentJobId !== job.id) return;
+    const li = document.querySelector(`#toc-list > li[data-sec="${c.id}"]`);
+    const card = cardEl(c.id);
+    if (!li || !card) return;
+    const items = tocHeadings(card, c);
+    const key = items.map((x) => `${x.depth}:${x.label}`).join('\n');
+    if (li.dataset.subKey === key) return;
+    li.dataset.subKey = key;
+    let ol = li.querySelector(':scope > ol');
+    if (!items.length) { if (ol) ol.remove(); scheduleSpy(); return; }
+    if (!ol) ol = li.appendChild(el('ol', { class: 'toc-sub' }));
+    items.forEach((it, i) => {
+      const a = (ol.children[i] || ol.appendChild(el('li', {}, el('a', { class: 'toc-sub-link' }, el('span', { class: 'lbl' }))))).firstElementChild;
+      a.setAttribute('href', `#${it.id}`);
+      a.dataset.target = it.id;
+      a.dataset.depth = String(it.depth);
+      a.title = it.label;
+      a.firstElementChild.textContent = it.label;
+    });
+    while (ol.children.length > items.length) ol.lastElementChild.remove();
+    scheduleSpy();
+  }
+  function scheduleTocSub(job, c) {
+    if (tocTimers.has(c.id)) return;
+    const wait = Math.max(0, TOC_THROTTLE_MS - (Date.now() - (tocLast.get(c.id) || 0)));
+    tocTimers.set(c.id, setTimeout(() => refreshTocSub(job, c), wait));
+  }
+  function onTocClick(e) {
+    const a = e.target.closest('#toc-list a');
+    if (!a) return;
+    e.preventDefault();
+    if (a.classList.contains('toc-link')) {
+      const card = cardEl(a.dataset.sec);
+      if (card) scrollToNode(card);
+      return;
+    }
+    const h = document.getElementById(a.dataset.target);
+    if (!h) return;
+    scrollToNode(h);
+    h.focus({ preventScroll: true });
+  }
+  function scheduleSpy() {
+    if (spyFrame) return;
+    spyFrame = requestAnimationFrame(() => { spyFrame = 0; updateTocSpy(); });
+  }
+  function updateTocSpy() {
+    if (state.currentTab !== 'translation' || $('view-result').hidden) return;
+    const cards = document.querySelectorAll('#tr-main .section-card');
     if (!cards.length) return;
-    const visible = new Set();
-    tocObserver = new IntersectionObserver((entries) => {
-      for (const e of entries) { if (e.isIntersecting) visible.add(e.target); else visible.delete(e.target); }
-      const current = cards.find((c) => visible.has(c));
-      for (const a of document.querySelectorAll('#toc-list a')) a.setAttribute('aria-current', current && a.dataset.sec === current.dataset.sec ? 'true' : 'false');
-    }, { rootMargin: '-64px 0px -55% 0px', threshold: 0 });
-    for (const c of cards) tocObserver.observe(c);
+    const list = $('toc-list');
+    const line = readingLine();
+    let cur = null;
+    for (const card of cards) { if (card.getBoundingClientRect().top <= line) cur = card; else break; }
+    if (!cur && cards[0].getBoundingClientRect().top < window.innerHeight * 0.45) cur = cards[0];
+    const secId = cur ? cur.dataset.sec : '';
+    let sub = null;
+    if (cur) {
+      for (const a of list.querySelectorAll(`:scope > li[data-sec="${secId}"] .toc-sub-link`)) {
+        const h = document.getElementById(a.dataset.target);
+        if (!h || h.getBoundingClientRect().top > line) break;
+        sub = a;
+      }
+    }
+    let active = null;
+    for (const a of list.querySelectorAll('a')) {
+      const section = a.classList.contains('toc-link');
+      const own = section && a.dataset.sec === secId;
+      const on = section ? own && !sub : a === sub;
+      if (on) active = a;
+      const v = on ? 'true' : 'false';
+      if (a.getAttribute('aria-current') !== v) a.setAttribute('aria-current', v);
+      if (section) a.classList.toggle('contains-current', own && !!sub);
+    }
+    if (active && active !== spyActive) keepTocVisible(active);
+    spyActive = active;
+  }
+  function keepTocVisible(a) {
+    const ar = a.getBoundingClientRect();
+    for (const box of [$('toc'), $('toc-list')]) {
+      const r = box.getBoundingClientRect();
+      if (box.scrollHeight > box.clientHeight + 1) {
+        if (ar.top < r.top) box.scrollTop -= r.top - ar.top + 8;
+        else if (ar.bottom > r.bottom) box.scrollTop += ar.bottom - r.bottom + 8;
+      }
+      if (box.scrollWidth > box.clientWidth + 1) {
+        if (ar.left < r.left) box.scrollLeft -= r.left - ar.left + 8;
+        else if (ar.right > r.right) box.scrollLeft += ar.right - r.right + 8;
+      }
+    }
   }
   function pdfHref(job) { return job.source.type === 'file' ? (job.source.blobUrl || '') : (job.source.pdfUrl || ''); }
   function pdfEmbeddable(job) { return job.source.type === 'file' ? !!job.source.blobUrl : !!job.source.iframeOk; }
@@ -2549,7 +2852,6 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  // 분할된 조각을 한 섹션으로 이어 붙여 내보내기 단위를 만든다
   function exportSections(job) {
     const out = [];
     let i = 0;
@@ -2572,7 +2874,7 @@
     L.push('', '## 문제정의', '', view.sections.problem_definition);
     L.push('', '## 해결방법(제안 기법)', '', view.sections.proposed_method);
     if (view.pipeline.length) { L.push('', '### 제안 기법 처리 흐름'); view.pipeline.forEach((p, i) => L.push(`${i + 1}. **${p.name}** — ${p.desc}`)); }
-    L.push('', '## 결과(정확한 수치) 및 장점', '', view.sections.results_and_strengths);
+    L.push('', '## 결과 및 장점', '', view.sections.results_and_strengths);
     if (view.metrics.length) {
       L.push('', '### 주요 성능 지표', '', '| 지표 | 데이터셋 | 비교 기준 | 제안 기법 | 변화 | 출처 |', '|---|---|---|---|---|---|');
       for (const m of view.metrics) {
@@ -2606,8 +2908,39 @@
         if (!/^#/.test(s.text.trimStart())) parts.push(`## ${s.title}`, '');
         parts.push(s.text || `(번역 없음${s.status === 'failed' ? ' · 실패' : ''})`);
       }
+      parts.push('', ideasMarkdown(job));
     }
     return `${parts.join('\n')}\n`;
+  }
+  function ideasMarkdown(job) {
+    const view = ideasView(job.ideas);
+    const L = ['# 주제 제안'];
+    if (!view.ideas.length) { L.push('', '(주제 제안이 생성되지 않았습니다.)'); return L.join('\n'); }
+    L.push('', `> ${IDEAS_INTRO}`);
+    view.ideas.forEach((it, i) => {
+      L.push('', `## ${i + 1}. ${it.title}`);
+      const tags = ideaTags(it);
+      if (tags.length) L.push('', `*${tags.join(' · ')}*`);
+      for (const [label, ps] of ideaBlocks(it)) L.push('', `**${label}**`, '', ps.map((x) => x.text).join('\n\n'));
+      if (it.keywords.length) L.push('', `**키워드** ${it.keywords.map((k) => `[${k.replace(/[[\]]/g, '\\$&')}](${SCHOLAR_URL}${encodeURIComponent(k).replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29'))})`).join(', ')}`);
+    });
+    if (view.questions.length) { L.push('', '## 논문이 남긴 질문', ''); for (const q of view.questions) L.push(`- ${q}`); }
+    if (view.notes) L.push('', `> 참고: ${view.notes}`);
+    return L.join('\n');
+  }
+  function ideasHtml(job) {
+    const view = ideasView(job.ideas);
+    if (!view.ideas.length) return '<p class="muted">(주제 제안이 생성되지 않았습니다.)</p>';
+    const out = [`<p class="muted">${escapeHtml(IDEAS_INTRO)}</p>`];
+    view.ideas.forEach((it, i) => {
+      const tags = ideaTags(it);
+      const blocks = ideaBlocks(it).map(([label, ps]) => `<h3>${label}</h3>${ps.map((x) => `<p>${escapeHtml(x.text)}</p>`).join('')}`).join('');
+      const kw = it.keywords.length ? `<p class="kw">${it.keywords.map((k) => `<a href="${escapeHtml(SCHOLAR_URL + encodeURIComponent(k))}" target="_blank" rel="noopener noreferrer" lang="en">${escapeHtml(k)}</a>`).join(' ')}</p>` : '';
+      out.push(`<article class="sec idea"><h2>${i + 1}. ${escapeHtml(it.title)}</h2>${tags.length ? `<p class="muted">${escapeHtml(tags.join(' · '))}</p>` : ''}${blocks}${kw}</article>`);
+    });
+    if (view.questions.length) out.push(`<h2>논문이 남긴 질문</h2><ul>${view.questions.map((q) => `<li>${escapeHtml(q)}</li>`).join('')}</ul>`);
+    if (view.notes) out.push(`<p class="muted">참고: ${escapeHtml(view.notes)}</p>`);
+    return out.join('\n');
   }
   const EXPORT_CSS = `:root{color-scheme:light;--page:#f9f9f7;--surface-1:#fcfcfb;--surface-2:#f3f2ee;--text-primary:#0b0b0b;--text-secondary:#52514e;--text-muted:#898781;--border:rgba(11,11,11,.1);--series-1:#2a78d6;--chart-deemph:#c3c2b7;--status-good:#0ca30c;--status-good-text:#006300;--status-critical-text:#a12626;--status-serious:#ec835a}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#f0efec;--text-secondary:#c3c2b7;--text-muted:#898781;--border:rgba(255,255,255,.1);--series-1:#3987e5;--chart-deemph:#52514e;--status-good-text:#0ca30c;--status-critical-text:#e66767}}
@@ -2619,7 +2952,7 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
 .glance{list-style:none;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.glance li{border:1px solid var(--border);border-left:3px solid var(--chart-deemph);border-radius:8px;padding:10px 12px;font-size:14px}.glance li:nth-child(2){border-left-color:var(--series-1)}.glance b{display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px}
 .md{font-size:15px;line-height:1.75;word-break:keep-all;overflow-wrap:anywhere}.md p{margin:0 0 .9em}.md pre,.md code{font-family:ui-monospace,Menlo,monospace;background:var(--surface-2);border-radius:4px}.md pre{padding:12px;overflow-x:auto}.md code{padding:.1em .35em}.md pre code{padding:0;background:none}.md blockquote{margin:0 0 .9em;padding:.4em 1em;border-left:3px solid var(--chart-deemph);color:var(--text-secondary)}
 .table-wrap{overflow-x:auto;margin:0 0 .9em}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid var(--border);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--surface-2)}
-.num{text-align:right;font-variant-numeric:tabular-nums}.ours{font-weight:600}.sub{display:block;font-size:12px;color:var(--text-muted)}.unit{color:var(--text-muted);font-size:12px;margin-left:2px}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.ours{font-weight:600}.sub{display:block;font-size:12px;color:var(--text-muted)}.unit{color:var(--text-muted);font-size:12px;margin-left:2px}
 .bar-cell{min-width:160px}.bars{display:flex;flex-direction:column;gap:2px}.bar{height:8px;border-radius:0 4px 4px 0}.bar--ours{background:var(--series-1)}.bar--base{background:var(--chart-deemph)}
 .legend{font-size:12px;color:var(--text-secondary)}.legend span{margin-right:12px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}.legend .s1{background:var(--series-1)}.legend .s0{background:var(--chart-deemph)}
 .delta{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--surface-2);color:var(--text-secondary);white-space:nowrap}.delta[data-tone=good]{color:var(--status-good-text);background:rgba(12,163,12,.12)}.delta[data-tone=critical]{color:var(--status-critical-text);background:rgba(208,59,59,.12)}
@@ -2627,6 +2960,11 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
 .proscons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:1em 0}.pc-col{border:1px solid var(--border);border-top:3px solid var(--chart-deemph);border-radius:8px;padding:10px 14px}.pc-col[data-kind=pro]{border-top-color:var(--status-good)}.pc-col[data-kind=con]{border-top-color:var(--status-serious)}.pc-col h4{margin:0 0 8px}.pc-col ul{padding-left:18px;margin:0;font-size:14px}
 .tech{padding-left:18px;font-size:14px}.sec{margin-top:24px;padding:20px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1)}.sec h2{margin-top:0;border:0}
 .katex-display{overflow-x:auto;overflow-y:hidden;padding:8px 0}
+.md--sum ul{list-style:disc;padding-left:1.3em;margin:0 0 .9em}.md--sum ul ul{list-style:circle}.md--sum ul ul ul{list-style:square}.md--sum ol{list-style:decimal;padding-left:1.6em;margin:0 0 .9em}
+.md--sum li{margin:.15em 0}.md--sum>ul>li,.md--sum>ol>li{margin:0 0 .8em}.md--sum li>ul,.md--sum li>ol{margin:.25em 0 0}.md--sum li>p{margin:0 0 .25em}
+.md--sum>ul>li::marker,.md--sum>ol>li::marker{color:var(--series-1)}.md--sum li li::marker{color:var(--text-muted)}
+.md--sum>ul>li>strong:first-child,.md--sum>ul>li>p:first-child>strong:first-child,.md--sum>ol>li>strong:first-child,.md--sum>ol>li>p:first-child>strong:first-child{color:var(--text-primary);letter-spacing:.01em}
+.idea h3{font-size:14px;margin:1em 0 .2em;color:var(--text-secondary)}.idea p{margin:0 0 .5em}.kw a{display:inline-block;margin:0 6px 6px 0;padding:2px 10px;border:1px solid var(--border);border-radius:999px;font-size:13px;text-decoration:none;overflow-wrap:anywhere}
 @media(max-width:640px){.glance,.proscons{grid-template-columns:minmax(0,1fr)}}`;
   function pcHtml(kind, title, items) {
     const body = items.length ? `<ul>${items.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>` : '<p class="muted">추출된 항목이 없습니다.</p>';
@@ -2646,26 +2984,27 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
     } else {
       out.push(`<p class="tldr"><strong>한 줄 요약</strong> ${escapeHtml(view.tldr)}</p>`);
       out.push(`<ol class="glance"><li><b>문제</b>${escapeHtml(view.glance.problem)}</li><li><b>방법</b>${escapeHtml(view.glance.method)}</li><li><b>결과</b>${escapeHtml(view.glance.result)}</li></ol>`);
-      out.push(`<h2>문제정의</h2><div class="md">${renderMarkdown(view.sections.problem_definition)}</div>`);
-      out.push(`<h2>해결방법(제안 기법)</h2><div class="md">${renderMarkdown(view.sections.proposed_method)}</div>`);
+      out.push(`<h2>문제정의</h2><div class="md md--sum">${renderMarkdown(view.sections.problem_definition)}</div>`);
+      out.push(`<h2>해결방법(제안 기법)</h2><div class="md md--sum">${renderMarkdown(view.sections.proposed_method)}</div>`);
       if (view.pipeline.length) out.push(`<h3>제안 기법 처리 흐름</h3><ol class="steps">${view.pipeline.map((p, i) => `<li><span class="n">${i + 1}</span><div><strong>${escapeHtml(p.name)}</strong> ${escapeHtml(p.desc)}</div></li>`).join('')}</ol>`);
-      out.push(`<h2>결과(정확한 수치) 및 장점</h2><div class="md">${renderMarkdown(view.sections.results_and_strengths)}</div>`);
+      out.push(`<h2>결과 및 장점</h2><div class="md md--sum">${renderMarkdown(view.sections.results_and_strengths)}</div>`);
       if (view.metrics.length) {
         const tbody = el('tbody', {}, view.metrics.map(metricRow));
         out.push(`<h3>주요 성능 지표</h3><p class="legend"><span><i class="s1"></i>제안 기법</span><span><i class="s0"></i>비교 기준</span></p><div class="table-wrap"><table class="metrics-table"><thead><tr><th>지표</th><th class="num">비교 기준</th><th class="num">제안 기법</th><th>비교 바</th><th>변화</th><th>출처</th></tr></thead>${tbody.outerHTML}</table></div>`);
       }
       if (view.hasScores) out.push(`<h3>논문 평가 점수 (1~5, GPT 추정)</h3><table class="score-table"><thead><tr><th>항목</th><th class="num">점수</th><th>근거</th></tr></thead><tbody>${RADAR_AXES.map(([k, label]) => `<tr><td>${label}</td><td class="num">${view.scores[k].score == null ? '—' : `${view.scores[k].score} / 5`}</td><td>${escapeHtml(view.scores[k].rationale)}</td></tr>`).join('')}</tbody></table>`);
-      out.push(`<h2>단점 및 한계점</h2><div class="md">${renderMarkdown(view.sections.weaknesses_and_limitations)}</div>`);
+      out.push(`<h2>단점 및 한계점</h2><div class="md md--sum">${renderMarkdown(view.sections.weaknesses_and_limitations)}</div>`);
       if (view.strengths.length || view.limitations.length) out.push(`<div class="proscons">${pcHtml('pro', '장점', view.strengths)}${pcHtml('con', '한계점', view.limitations)}</div>`);
-      out.push(`<h2>핵심기술</h2><div class="md">${renderMarkdown(view.sections.core_technology)}</div>`);
-      if (view.coreTech.length) out.push(`<ul class="tech">${view.coreTech.map((t) => `<li><strong>${escapeHtml(t.name)}</strong> <span class="muted">(${TECH_CATS[t.category]})</span> ${escapeHtml([t.role, t.desc].filter(Boolean).join(' '))}</li>`).join('')}</ul>`);
+      const techLang = isEnglish(view.sections.core_technology) ? ' lang="en"' : '';
+      out.push(`<h2>핵심기술</h2><div class="md md--sum"${techLang}>${renderMarkdown(view.sections.core_technology)}</div>`);
+      if (view.coreTech.length) out.push(`<ul class="tech">${view.coreTech.map((t) => `<li><strong${isEnglish(t.name) ? ' lang="en"' : ''}>${escapeHtml(t.name)}</strong> <span class="muted">(${TECH_CATS[t.category]})</span> <span${isEnglish(t.role + t.desc) ? ' lang="en"' : ''}>${escapeHtml([t.role, t.desc].filter(Boolean).join(' '))}</span></li>`).join('')}</ul>`);
     }
     out.push('</section><section><h1>전문 번역</h1>');
     for (const s of exportSections(job)) {
       const heading = /^#/.test(s.text.trimStart()) ? '' : `<h2>${escapeHtml(s.title)}</h2>`;
       out.push(`<article class="sec">${heading}${s.text ? `<div class="md">${renderMarkdown(s.text)}</div>` : `<p class="muted">(번역 없음${s.status === 'failed' ? ' · 실패' : ''})</p>`}</article>`);
     }
-    out.push('</section>');
+    out.push('</section><section><h1>주제 제안</h1>', ideasHtml(job), '</section>');
     const katexOpts = JSON.stringify(KATEX_OPTS).replace(/</g, '\\u003c');
     return `<!doctype html>\n<html lang="ko">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${escapeHtml(title)}</title>\n<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/katex.min.css">\n<style>${EXPORT_CSS}</style>\n</head>\n<body>\n<main>${out.join('\n')}</main>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/katex.min.js"><\/script>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/contrib/auto-render.min.js"><\/script>\n<script>if (typeof renderMathInElement === 'function') renderMathInElement(document.body, ${katexOpts});<\/script>\n</body>\n</html>\n`;
   }
@@ -2681,7 +3020,8 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
     } catch { toast('내보내기에 실패했습니다.', 'error'); }
   }
 
-  const ROUTE_RE = /^#(home|result\/([A-Za-z0-9_-]+)(?:\/(summary|translation|source))?|settings)$/;
+  const TABS = ['summary', 'translation', 'ideas', 'source'];
+  const ROUTE_RE = /^#(home|result\/([A-Za-z0-9_-]+)(?:\/(summary|translation|ideas|source))?|settings)$/;
   function navigate(hash) {
     if (location.hash === hash) onHashChange(); else location.hash = hash;
   }
@@ -2716,13 +3056,13 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
   }
   function selectTab(tab, fromRoute) {
     state.currentTab = tab;
-    for (const t of ['summary', 'translation', 'source']) {
+    for (const t of TABS) {
       $(`tab-${t}`).setAttribute('aria-selected', String(t === tab));
       $(`panel-${t}`).hidden = t !== tab;
     }
     const job = currentJob();
     if (job && !fromRoute) { state.lastHash = `#result/${job.id}/${tab}`; history.replaceState(null, '', state.lastHash); }
-    if (tab === 'translation') { flushDirtyRenders(); if (job) renderPdfPane(job); }
+    if (tab === 'translation') { flushDirtyRenders(); if (job) renderPdfPane(job); scheduleSpy(); }
     if (tab === 'source' && job) renderSourcePanel(job);
   }
 
@@ -2761,9 +3101,7 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
       if (!res.ok) return showGateError(`확인 중 문제가 발생했습니다 (HTTP ${res.status}). 다시 시도해 주세요.`);
       let ids = [];
       try { ids = filterModels((await res.json()).data); } catch { ids = []; }
-      // 로그인 방식(또는 키)이 바뀌면 진행 중인 분석은 이전 방식으로 계속할 수 없으므로 중단한다
       if (state.run && (isPlan() || key !== state.apiKey)) cancelJob(state.jobs[state.run.jobId]);
-      // 키로 바꾸면 ChatGPT 토큰은 더 쓰이지 않으므로 폐기한다 (등록은 유지)
       if (hasPlanSession() && !(await logoutChatGPT())) toast(MSG.cgRevokeFail, 'error');
       state.apiKey = key;
       ls.setRaw(LS.apiKey, key);
@@ -2842,7 +3180,6 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
     const ok = await confirmDialog({ title: '로그아웃', body: '저장된 API 키를 이 브라우저에서 삭제할까요? 분석 기록과 설정은 유지됩니다.', ok: '키 삭제' });
     if (!ok) return;
     if (state.run) cancelJob(state.jobs[state.run.jobId]);
-    // 키 모드에 남아 있는 ChatGPT 토큰(이전 버전이 남긴 것)도 함께 폐기한다
     if (hasPlanSession() && !(await logoutChatGPT())) toast(MSG.cgRevokeFail, 'error');
     state.apiKey = '';
     ls.remove(LS.apiKey);
@@ -2852,7 +3189,6 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
   }
   function onChatGPTClick() {
     if (!isLoopbackHttp()) return;
-    // 콜백 주소는 127.0.0.1이므로 localhost·[::1]로 열었으면 127.0.0.1로 이동한 뒤 자동으로 흐름을 시작한다
     if (location.hostname !== '127.0.0.1') {
       const u = new URL(location.href);
       u.hostname = '127.0.0.1';
@@ -3054,7 +3390,7 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
   }
   function setSbs(on) {
     state.sbs = on;
-    try { sessionStorage.setItem('rpt.sbs', on ? '1' : '0'); } catch { /* 세션 저장 불가 */ }
+    try { sessionStorage.setItem('rpt.sbs', on ? '1' : '0'); } catch {}
     $('side-by-side').checked = on;
     $('tr-layout').dataset.sbs = on ? '1' : '0';
     const job = currentJob();
@@ -3073,13 +3409,13 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
   function stepSection(job, dir) {
     const cards = [...document.querySelectorAll('#tr-main .section-card')];
     if (!cards.length) return;
-    const firstBelow = cards.findIndex((c) => c.getBoundingClientRect().top > 65);
-    const current = firstBelow < 0 ? cards.length - 1 : Math.max(0, firstBelow - 1);
-    const next = clamp(dir > 0 ? current + 1 : current - 1, 0, cards.length - 1);
-    cards[next].scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    const line = readingLine();
+    let current = -1;
+    cards.forEach((c, i) => { if (c.getBoundingClientRect().top <= line) current = i; });
+    scrollToNode(cards[clamp(current + dir, 0, cards.length - 1)]);
   }
   function bindResult() {
-    for (const t of ['summary', 'translation', 'source']) $(`tab-${t}`).addEventListener('click', () => selectTab(t));
+    for (const t of TABS) $(`tab-${t}`).addEventListener('click', () => selectTab(t));
     $('limit-switch-key').addEventListener('click', () => { const job = currentJob(); if (job) { job.limitHit = false; renderProgress(job); } openGate(); });
     $('btn-cancel').addEventListener('click', () => { const job = currentJob(); if (job) cancelJob(job); });
     $('btn-retry-all').addEventListener('click', () => { const job = currentJob(); if (job) retryFailed(job); });
@@ -3100,11 +3436,19 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
     $('raw-math').addEventListener('change', () => {
       state.rawMath = $('raw-math').checked;
       const job = currentJob();
-      if (job) { renderTranslation(job); renderSummary(job); }
+      if (job) { renderTranslation(job); renderSummary(job); renderIdeas(job); }
     });
     $('btn-font-dec').addEventListener('click', () => stepFont(-1));
     $('btn-font-inc').addEventListener('click', () => stepFont(1));
     $('btn-toc-top').addEventListener('click', () => window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' }));
+    $('toc-list').addEventListener('click', onTocClick);
+    window.addEventListener('scroll', scheduleSpy, { passive: true });
+    window.addEventListener('resize', scheduleSpy);
+    $('panel-ideas').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-ideas-action]');
+      const job = currentJob();
+      if (b && job) regenerateIdeas(job);
+    });
     $('btn-source-reselect').addEventListener('click', () => $('source-file-input').click());
     $('source-file-input').addEventListener('change', () => {
       const input = $('source-file-input');
@@ -3138,7 +3482,8 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
         case ',': e.preventDefault(); openSettings(); break;
         case '1': if (job) selectTab('summary'); break;
         case '2': if (job) selectTab('translation'); break;
-        case '3': if (job) selectTab('source'); break;
+        case '3': if (job) selectTab('ideas'); break;
+        case '4': if (job) selectTab('source'); break;
         case '[': case ']': if (job && state.currentTab === 'translation') { e.preventDefault(); stepSection(job, e.key === ']' ? 1 : -1); } break;
         case 't': if (job && state.currentTab === 'translation') { const a = document.querySelector('#toc-list a'); if (a) a.focus(); } break;
         case 's': if (job && state.currentTab === 'translation' && !narrowScreen()) setSbs(!state.sbs); break;
@@ -3160,23 +3505,20 @@ h1{font-size:24px;margin:1.6em 0 .6em}h2{font-size:19px;margin:1.4em 0 .5em;padd
 
   async function startAuthFlow() {
     const params = new URLSearchParams(location.search);
-    // OAuth 콜백: state와 code/error가 함께 오면 콜백으로 처리한다
     if (params.get('state') && (params.get('code') || params.get('error'))) {
       await handleAuthCallback();
       onHashChange();
       return;
     }
-    // localhost에서 넘어온 자동 시작 요청
     if (params.get('chatgpt') === 'start') {
       const u = new URL(location.href);
       u.searchParams.delete('chatgpt');
-      try { history.replaceState(null, '', u.pathname + u.search + u.hash); } catch { /* 히스토리 접근 불가 */ }
+      try { history.replaceState(null, '', u.pathname + u.search + u.hash); } catch {}
       onHashChange();
       openGate();
       if (isLoopbackHttp()) startChatGPT({});
       return;
     }
-    // 저장된 모드에 세션이 있을 때만 게이트를 생략한다
     if (isPlan() ? hasPlanSession() : hasApiKeySession()) { updateAuthUI(); refreshModels(); }
     else openGate();
     onHashChange();

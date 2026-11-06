@@ -1,4 +1,3 @@
-// serve.py 중계 검증: 가짜 업스트림을 띄우고 serve.py 를 자식 프로세스로 실행해 정적 서비스와 중계 동작을 확인한다
 const http = require('http');
 const net = require('net');
 const path = require('path');
@@ -6,11 +5,15 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 
 const SERVE_PY = process.env.SERVE_PY || path.resolve(__dirname, '..', 'serve.py');
+const SERVE_CMD = process.env.SERVE_CMD || '';
+const SERVE_ARGS = (process.env.SERVE_ARGS || '').split(' ').filter(Boolean);
+const NATIVE = SERVE_CMD !== '';
+const VERSION = process.env.SERVE_VERSION || '1.2.0';
 const APP_DIR = process.env.APP_DIR || path.resolve(__dirname, '..');
 const TOKEN = 'test-token-123';
 const SSE = 'data: {"type":"a"}\n\ndata: {"type":"b"}\n\ndata: [DONE]\n\n';
 const ERR_BODY = { error: { code: 'subscription_sharing_user_not_eligible', message: 'not eligible' } };
-const HEALTH = { ok: true, proxy: true, version: '1.2.0' };
+const HEALTH = { ok: true, proxy: true, version: VERSION };
 
 const results = [];
 function check(name, ok, detail) {
@@ -29,7 +32,6 @@ function sendJson(res, status, obj) {
   res.end(data);
 }
 
-// 끝나지 않은 응답의 'close'는 연결이 끊길 때만 온다 (req 'close'는 본문을 다 읽자마자 와서 중단 감지에 쓸 수 없다)
 const closed = { slow: 0, slowhead: 0 };
 const upstream = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://upstream');
@@ -45,13 +47,11 @@ const upstream = http.createServer(async (req, res) => {
     });
   }
   if (route === 'GET /v1/headers') {
-    // 브라우저로 새어 나가면 안 되는 상위 서버 헤더들
     const data = JSON.stringify({ ok: true });
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data), 'set-cookie': 'sid=1; Path=/', 'access-control-allow-origin': '*', connection: 'keep-alive', 'alt-svc': 'h3=":443"' });
     return res.end(data);
   }
   if (route === 'GET /v1/gzip') {
-    // Accept-Encoding: identity 를 무시한 상위 서버: 본문은 그대로, content-encoding 도 그대로 전달돼야 브라우저가 풀 수 있다
     const gz = zlib.gzipSync(JSON.stringify({ gz: true }));
     res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': gz.length });
     return res.end(gz);
@@ -74,7 +74,6 @@ const upstream = http.createServer(async (req, res) => {
     return;
   }
   if (route === 'POST /v1/slowhead') {
-    // 모델의 첫 응답(헤더)을 기다리는 동안 사용자가 중단하는 경우
     setTimeout(() => { if (!res.destroyed) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: {"type":"late"}\n\n'); } }, 5000).unref();
     return;
   }
@@ -83,7 +82,6 @@ const upstream = http.createServer(async (req, res) => {
 });
 
 function request(port, method, p, opts = {}) {
-  // 브라우저 fetch 처럼 본문 길이를 Content-Length 로 보낸다 (chunked 옵션은 serve.py 의 411 응답 검증용)
   const headers = { ...(opts.headers || {}), ...(opts.body != null && !opts.chunked ? { 'Content-Length': Buffer.byteLength(opts.body) } : {}) };
   return new Promise((resolve, reject) => {
     let destroyed = false;
@@ -98,7 +96,6 @@ function request(port, method, p, opts = {}) {
       res.on('end', finish);
       res.on('close', finish);
     });
-    // 응답이 멈추면 스위트가 영원히 기다리지 않도록 요청마다 제한 시간을 둔다
     req.setTimeout(opts.timeoutMs || 10000, () => req.destroy(new Error(`timeout ${method} ${p}`)));
     if (opts.abortAfterMs) setTimeout(abort, opts.abortAfterMs);
     req.on('error', (e) => (destroyed ? resolve({ aborted: true, error: e.code }) : reject(e)));
@@ -107,7 +104,6 @@ function request(port, method, p, opts = {}) {
   });
 }
 
-// 응답 전에 끊는 클라이언트(탭 닫기): serve.py 가 요청마다 역추적을 찍지 않아야 한다
 async function disconnectEarly(port, p, times) {
   for (let i = 0; i < times; i++) {
     await new Promise((resolve) => {
@@ -119,8 +115,9 @@ async function disconnectEarly(port, p, times) {
 }
 
 const children = new Set();
-function startServe(args, env, script = [SERVE_PY]) {
-  const child = spawn('python3', [...script, ...args], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+function startServe(args, env, pythonArgs) {
+  const [cmd, argv] = pythonArgs ? ['python3', [...pythonArgs, ...args]] : NATIVE ? [SERVE_CMD, [...SERVE_ARGS, ...args]] : ['python3', [SERVE_PY, ...args]];
+  const child = spawn(cmd, argv, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   children.add(child);
   child.on('exit', () => children.delete(child));
   const log = { out: '' };
@@ -161,13 +158,11 @@ const streamPost = (port) => request(port, 'POST', '/__rpt/openai/v1/responses',
   headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'm', input: 'hi', stream: true }),
 });
 
-// 어떤 검사가 멈춰도 스위트는 실패로 끝난다 (띄운 serve.py 는 모두 정리)
 setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.kill('SIGKILL'); process.exit(1); }, 90000).unref();
 
 (async () => {
   const upPort = await listen(upstream);
   const s = startServe(['--port', '0', '--dir', APP_DIR], { RPT_UPSTREAM: `http://127.0.0.1:${upPort}` });
-  // 응답 없는 상위 주소(TEST-NET-3): 연결 단계가 짧은 제한 시간에 끊겨 502 가 와야 한다. 오래 걸리므로 다른 검사와 같이 돌린다
   const bh = startServe(['--port', '0', '--dir', APP_DIR], { RPT_UPSTREAM: 'http://203.0.113.1:9' });
   const blackhole = (async () => {
     const bhPort = await waitForPort(bh);
@@ -175,6 +170,23 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
     const r = await request(bhPort, 'GET', '/__rpt/openai/v1/models', { headers: { Authorization: `Bearer ${TOKEN}` }, timeoutMs: 25000 });
     return { status: r.status, code: (parseJson(r.body) || {}).error?.code, ms: Date.now() - t0 };
   })().catch((e) => ({ error: e.message }));
+  const silentSockets = new Set();
+  let silentAccepted = 0;
+  const silent = net.createServer((sock) => {
+    silentAccepted += 1;
+    silentSockets.add(sock);
+    sock.on('error', () => {});
+    sock.on('close', () => silentSockets.delete(sock));
+  });
+  let sv = null;
+  const silentRun = NATIVE ? (async () => {
+    const silentPort = await listen(silent);
+    sv = startServe(['--port', '0', '--dir', APP_DIR], { RPT_UPSTREAM: `http://127.0.0.1:${silentPort}` });
+    const svPort = await waitForPort(sv);
+    const t0 = Date.now();
+    const r = await request(svPort, 'GET', '/__rpt/openai/v1/models', { headers: { Authorization: `Bearer ${TOKEN}` }, timeoutMs: 25000 });
+    return { status: r.status, code: (parseJson(r.body) || {}).error?.code, ms: Date.now() - t0, accepted: silentAccepted };
+  })().catch((e) => ({ error: e.message })) : null;
   let crashed = false;
   try {
     const port = await waitForPort(s);
@@ -204,17 +216,20 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
     check('relay-get-authorization', get.status === 200 && echo.authorization === `Bearer ${TOKEN}`, { status: get.status, echo });
     check('relay-get-host', echo.host === `127.0.0.1:${upPort}`, echo.host);
     check('relay-get-accept-encoding-identity', echo.acceptEncoding === 'identity', echo.acceptEncoding);
-    check('relay-get-user-agent', echo.userAgent === 'rpt-serve/1.2.0', echo.userAgent);
+    check('relay-get-user-agent', echo.userAgent === `rpt-serve/${VERSION}`, echo.userAgent);
     check('relay-get-query', echo.query === '?a=1', echo.query);
     check('relay-drops-x-secret', echo.xSecret === null, echo.xSecret);
     check('relay-drops-cookie-origin-referer', echo.cookie === null && echo.origin === null && echo.referer === null, { cookie: echo.cookie, origin: echo.origin, referer: echo.referer });
     check('relay-response-headers', get.headers['cache-control'] === 'no-store' && get.headers['x-accel-buffering'] === 'no' && /application\/json/.test(get.headers['content-type'] || ''), get.headers);
     const hdr = await request(port, 'GET', '/__rpt/openai/v1/headers', { headers: { Authorization: `Bearer ${TOKEN}` } });
-    check('relay-strips-upstream-headers', hdr.status === 200 && hdr.headers['set-cookie'] === undefined && hdr.headers['access-control-allow-origin'] === undefined && hdr.headers['alt-svc'] === undefined && hdr.headers.connection === undefined, hdr.headers);
+    const ownConnection = NATIVE ? hdr.headers.connection === 'close' : hdr.headers.connection === undefined;
+    check('relay-strips-upstream-headers', hdr.status === 200 && hdr.headers['set-cookie'] === undefined && hdr.headers['access-control-allow-origin'] === undefined && hdr.headers['alt-svc'] === undefined && ownConnection, hdr.headers);
     const gz = await request(port, 'GET', '/__rpt/openai/v1/gzip', { headers: { Authorization: `Bearer ${TOKEN}` } });
     let inflated = null;
     try { inflated = JSON.parse(zlib.gunzipSync(gz.raw).toString()); } catch { inflated = null; }
-    check('relay-keeps-content-encoding', gz.status === 200 && gz.headers['content-encoding'] === 'gzip' && same(inflated, { gz: true }), { status: gz.status, headers: gz.headers, inflated });
+    const decoded = NATIVE && gz.headers['content-encoding'] === undefined ? parseJson(gz.body) : null;
+    const consistent = (gz.headers['content-encoding'] === 'gzip' && same(inflated, { gz: true })) || same(decoded, { gz: true });
+    check('relay-keeps-content-encoding', gz.status === 200 && consistent, { status: gz.status, headers: gz.headers, inflated, decoded });
 
     const payload = { model: 'm', input: [{ role: 'user', content: '안녕' }], store: false, stream: false };
     const post = await request(port, 'POST', '/__rpt/openai/v1/responses', { headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -232,7 +247,6 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
     check('stream-no-content-length', st.headers['content-length'] === undefined, st.headers);
     check('stream-body', st.body === SSE, st.body);
     check('stream-chunks-arrive-progressively', gap !== null && gap >= 150, { gap, chunks: st.chunks.map((c) => c.data) });
-    // 한 이벤트씩 바로 흘려야 한다: 첫 이벤트가 두 번째 이벤트(200 ms 뒤) 전에 혼자 도착
     check('stream-first-event-not-buffered', firstLag !== null && firstLag < 150 && st.chunks[0].data === 'data: {"type":"a"}\n\n' && st.chunks.length === 3, { firstLag, chunks: st.chunks.map((c) => c.data) });
 
     const err = await request(port, 'GET', '/__rpt/openai/v1/err', { headers: { Authorization: `Bearer ${TOKEN}` } });
@@ -242,7 +256,6 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
     const aborted = await request(port, 'POST', '/__rpt/openai/v1/slow', { headers: { Authorization: `Bearer ${TOKEN}` }, body: '{}', abortAfterFirstChunk: 300 });
     for (let i = 0; i < 30 && !closed.slow; i++) await sleep(100);
     check('abort-cancels-upstream', aborted.aborted === true && closed.slow > 0 && closed.slow - started < 3300, { aborted, closedAfterMs: closed.slow ? closed.slow - started : null });
-    // 헤더가 오기 전(모델 지연 중)에 끊어도 상위 요청이 바로 취소돼야 한다
     const startedHead = Date.now();
     const abortedHead = await request(port, 'POST', '/__rpt/openai/v1/slowhead', { headers: { Authorization: `Bearer ${TOKEN}` }, body: '{}', abortAfterMs: 300 });
     for (let i = 0; i < 20 && !closed.slowhead; i++) await sleep(50);
@@ -261,13 +274,27 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
     const nope = await request(port, 'GET', '/__rpt/nope');
     check('rpt-unknown-404', nope.status === 404 && (parseJson(nope.body) || {}).error?.code === 'proxy_not_found', { status: nope.status, body: nope.body });
 
+    if (NATIVE) {
+      const big = await request(port, 'POST', '/__rpt/openai/v1/responses', { headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', 'Content-Length': String(129 * 1024 * 1024) } });
+      check('native-body-cap-413', big.status === 413 && (parseJson(big.body) || {}).error?.code === 'proxy_too_large', { status: big.status, body: big.body });
+      const padding = {};
+      for (let i = 0; i < 70; i++) padding[`X-Pad-${i}`] = 'x'.repeat(1000);
+      const wide = await request(port, 'GET', '/__rpt/health', { headers: padding });
+      check('native-header-cap-431', wide.status === 431, { status: wide.status, body: (wide.body || '').slice(0, 120) });
+      const put = await request(port, 'PUT', '/index.html', { body: '{}' });
+      check('native-put-501', put.status === 501 && /text\/html/.test(put.headers['content-type'] || ''), { status: put.status, headers: put.headers });
+      const listing = await request(port, 'GET', '/test/');
+      check('native-no-listing-no-store', listing.status === 404 && index.headers['cache-control'] === 'no-store', { listing: listing.status, indexCacheControl: index.headers['cache-control'] });
+    } else {
+      console.log('-- native-only checks skipped (SERVE_CMD not set)');
+    }
+
     await disconnectEarly(port, '/__rpt/health', 60);
     await disconnectEarly(port, '/index.html', 60);
     await sleep(500);
     const afterDisconnects = await request(port, 'GET', '/__rpt/health');
     check('early-disconnect-no-traceback', afterDisconnects.status === 200 && !/Traceback/.test(s.log.out), { status: afterDisconnects.status, tail: s.log.out.slice(-300) });
 
-    // 중계 없는 정적 서버의 응답 형태: 앱의 no_proxy 판정과 mock-openai.js 의 staticServerError 가 이를 흉내 낸다 (POST·DELETE 는 404 가 아닌 501)
     const plain = startServe(['--bind', '127.0.0.1', '0', '--directory', APP_DIR], {}, ['-u', '-m', 'http.server']);
     try {
       const plainPort = await waitForPort(plain);
@@ -295,18 +322,27 @@ setTimeout(() => { console.log('RESULT: timeout'); for (const c of children) c.k
 
     const bhr = await blackhole;
     check('upstream-blackhole-502-before-connect-timeout', bhr.status === 502 && bhr.code === 'proxy_upstream' && bhr.ms < 20000, bhr);
+    if (silentRun) {
+      const svr = await silentRun;
+      check('native-upstream-silent-502-watchdog', svr.status === 502 && svr.code === 'proxy_upstream' && svr.accepted >= 1 && svr.ms < 20000, svr);
+    }
   } catch (e) {
     crashed = true;
     console.log('RUN FAILED: ' + (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
   } finally {
     const exit = await stopServe(s);
     await stopServe(bh);
+    if (silentRun) await silentRun;
+    if (sv) await stopServe(sv);
+    for (const sock of silentSockets) sock.destroy();
+    silent.close();
     upstream.closeAllConnections();
     upstream.close();
     check('serve-exits-quietly-on-sigint', exit.code === 0 && !/Traceback/.test(s.log.out), { exit, tail: s.log.out.slice(-300) });
-    check('serve-log-has-no-token', !s.log.out.includes(TOKEN) && !bh.log.out.includes(TOKEN));
+    check('serve-log-has-no-token', [s, bh, sv].every((x) => !x || !x.log.out.includes(TOKEN)));
     check('serve-log-has-no-query', !/code=x|code=z|a=1/.test(s.log.out), s.log.out.slice(-300));
   }
+  for (const c of children) c.kill('SIGKILL');
   const fails = results.filter((r) => !r.ok).map((r) => r.name);
   console.log(`RESULT: ${results.length - fails.length} ok, ${fails.length} failed ${JSON.stringify(fails)}`);
   process.exit(fails.length || crashed ? 1 : 0);

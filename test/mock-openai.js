@@ -17,9 +17,10 @@
     planUnsupportedParamOnce: '', planUnsupportedParamAlways: '', planLimitOnce: false, planFailMidStreamOnce: false, planAdmission401Once: false, planAdmission401Always: false, planNotEligible: false, planUnavailableOnce: false, planContextOnce: false,
     exchangeFailOnce: false,
     planModelsFail: '', planModelsFailOnce: false,
-    proxyMissing: false, proxyUpstreamDown: false
+    proxyMissing: false, proxyUpstreamDown: false,
+    ideasFailOnce: false
   };
-  // sessionStorage 덮어쓰기는 OAuth 내비게이션 뒤에도 남아 있어 시나리오 중간에 knob을 바꿀 수 있다
+  // Current mock knobs, including sessionStorage overrides.
   const cfg = () => {
     let over = null;
     try { over = JSON.parse(sessionStorage.getItem('__mock.cfg')); } catch { over = null; }
@@ -65,11 +66,86 @@
       result: '128K 토큰에서 처리량 3.1배, LongBench 평균 점수는 dense 대비 -0.4 point로 거의 동일하다.',
     },
     sections: {
-      problem_definition: '본 논문은 **장문맥 언어 모델링**에서 attention 연산의 비용 문제를 다룬다. 표준 attention은 시퀀스 길이 $n$에 대해 $O(n^2 d)$의 계산량을 가지며, 저자들은 128K 토큰 입력에서 전체 forward 시간의 71%가 attention에 소모됨을 보고한다(표 1).\n\n기존 희소 attention 기법은 고정 패턴(sliding window, dilated)에 의존하여 멀리 떨어진 토큰 간의 의존성을 놓치며, 저자들은 이를 건초더미 속 바늘(needle-in-a-haystack) 과제에서 정확도가 61.2%까지 떨어지는 사례로 뒷받침한다.\n\n연구 질문은 "어떤 토큰 쌍을 계산할지 데이터로부터 학습할 수 있는가"이며, 기여는 (1) 학습된 토큰 라우팅 구조, (2) 부하 균형 손실(load balancing loss), (3) 4개 벤치마크에서의 검증이다.',
-      proposed_method: 'SparseFlow는 각 층에 경량 라우터 $r(x_i) = \\mathrm{softmax}(W_r x_i)$를 두어 토큰 $x_i$를 $k$개의 전문가 블록 중 상위 2개로 보낸다. 각 전문가 블록 내부에서만 attention을 계산하므로 비용은 $O(n \\cdot n/k \\cdot d)$가 된다.\n\n학습 목표는 언어 모델링 손실과 부하 균형 손실의 합이다:\n\n$$\\mathcal{L} = \\mathcal{L}_{LM} + \\lambda \\sum_{j=1}^{k} f_j \\cdot p_j$$\n\n여기서 $f_j$는 전문가 $j$로 보내진 토큰 비율, $p_j$는 평균 라우팅 확률이며 $\\lambda = 0.01$을 사용한다.\n\n기존 MoE가 FFN을 분할하는 것과 달리 SparseFlow는 attention 자체를 분할한다는 점이 본질적 차이다. 모델 크기는 1.3B, 사전학습 토큰은 300B이다.',
-      results_and_strengths: '- **LongBench / 평균 점수 / dense baseline 대비**: 48.9 vs 48.5 (-0.4 point, 표 2)\n- **처리량 (128K, tokens/s)**: 1,420 → 4,400 (3.1배, 표 3)\n- **Needle-in-a-haystack 정확도**: 고정 패턴 희소화 61.2% → SparseFlow 97.8% (표 4)\n- **학습 perplexity (PG-19)**: 12.9 → 13.1 (+0.2, 표 2)\n\n제거 실험에서 부하 균형 손실을 제거하면 처리량이 2.2배로 떨어졌다(표 5). 장점은 장문맥에서의 큰 속도 향상, 고정 패턴 대비 장거리 의존성 보존, 기존 사전학습 체크포인트에서의 전환 가능성이다.',
-      weaknesses_and_limitations: '### 단점\n- 비교 대상에 최신 선형 attention 계열(예: state-space 모델)이 빠져 있다(표 2의 비교 대상 구성).\n- 모든 실험이 단일 시드로 보고되어 통계적 유의성이 불분명하다.\n\n### 한계점\n- 저자들은 8K 이하 짧은 문맥에서는 라우터 오버헤드로 오히려 7% 느려진다고 밝힌다(5절).\n- 전문가 수 $k$가 32를 넘으면 품질이 급격히 저하된다.\n\n### 향후 과제\n- 라우터를 계층적으로 확장하여 1M 토큰까지 적용하는 것.',
-      core_technology: '- **학습된 토큰 라우터** — 토큰을 전문가 블록에 배정 — softmax 게이트의 상위 2개 선택 (새로 고안)\n- **블록 내 attention** — 전문가 단위 attention 계산 — FlashAttention 커널 재사용 (차용)\n- **부하 균형 손실** — 전문가 쏠림 방지 — Switch Transformer의 보조 손실을 attention에 적용 (개선)\n- **연속 사전학습 전환** — dense 체크포인트에서 초기화 — 50B 토큰 추가 학습 (새로 고안)',
+      problem_definition: [
+        '- **과제 정의**',
+        '  - **장문맥 언어 모델링**에서 attention 연산의 비용 문제를 다룬다.',
+        '  - 표준 attention은 시퀀스 길이 $n$에 대해 $O(n^2 d)$의 계산량을 가진다.',
+        '- **기존 방법의 한계**',
+        '  - 128K 토큰 입력에서 forward 시간의 **71%**가 attention에 쓰인다 (표 1).',
+        '  - 고정 패턴(sliding window, dilated) 희소화는 멀리 떨어진 토큰 간 의존성을 놓친다.',
+        '    - needle-in-a-haystack 정확도가 **61.2%**까지 떨어진다 (표 4).',
+        '- **연구 질문·기여**',
+        '  - 어떤 토큰 쌍을 계산할지 데이터로부터 학습할 수 있는가를 묻는다.',
+        '  1. 학습된 토큰 라우팅 구조',
+        '  2. 부하 균형 손실(load balancing loss)',
+        '  3. 4개 벤치마크에서의 검증',
+      ].join('\n'),
+      proposed_method: [
+        '- **전체 구조**',
+        '  - 각 층에 경량 라우터 $r(x_i) = \\mathrm{softmax}(W_r x_i)$를 둔다.',
+        '  - 라우터는 토큰 $x_i$를 $k$개의 전문가 블록 중 상위 2개로 보낸다.',
+        '- **학습·추론 절차**',
+        '  1. 토큰마다 라우팅 확률을 계산한다.',
+        '  2. 같은 전문가 블록에 배정된 토큰끼리만 attention을 계산한다.',
+        '     - 비용은 $O(n \\cdot n/k \\cdot d)$가 된다.',
+        '  3. 전문가 출력을 원래 순서로 되돌린다.',
+        '- **학습 목표·손실 함수**',
+        '  - 언어 모델링 손실과 부하 균형 손실의 합을 쓴다.',
+        '',
+        '    $$\\mathcal{L} = \\mathcal{L}_{LM} + \\lambda \\sum_{j=1}^{k} f_j \\cdot p_j$$',
+        '',
+        '  - $f_j$는 전문가 $j$로 보내진 토큰 비율, $p_j$는 평균 라우팅 확률이며 $\\lambda = 0.01$이다.',
+        '- **기존 방법과의 차이**',
+        '  - 기존 MoE는 FFN을 나누지만 SparseFlow는 attention 자체를 나눈다.',
+        '- **주요 설정값**',
+        '  - 모델 크기 **1.3B**, 사전학습 토큰 **300B**.',
+      ].join('\n'),
+      results_and_strengths: [
+        '- **LongBench**',
+        '  - 평균 점수: dense baseline **48.9** → SparseFlow **48.5** (-0.4 point, 표 2)',
+        '- **처리량 (128K)**',
+        '  - tokens/s: **1,420** → **4,400** (3.1배, 표 3)',
+        '- **Needle-in-a-haystack**',
+        '  - 정확도: 고정 패턴 희소화 61.2% → SparseFlow **97.8%** (표 4)',
+        '    - 128K 길이에서 측정',
+        '- **제거 실험**',
+        '  - 부하 균형 손실을 빼면 처리량 향상이 2.2배로 줄어든다 (표 5).',
+        '- **장점**',
+        '  - 장문맥에서 큰 속도 향상',
+        '  - 고정 패턴 대비 장거리 의존성 보존',
+        '  - 기존 사전학습 체크포인트에서 전환 가능',
+      ].join('\n'),
+      weaknesses_and_limitations: [
+        '### 단점',
+        '- **비교 대상**',
+        '  - 최신 선형 attention 계열(예: state-space 모델)이 빠져 있다 (표 2).',
+        '- **통계적 유의성**',
+        '  - 모든 실험이 단일 시드로 보고되었다.',
+        '',
+        '### 한계점',
+        '- **짧은 문맥**',
+        '  - 8K 이하에서는 라우터 오버헤드로 7% 느려진다 (5절).',
+        '- **전문가 수**',
+        '  - $k$가 32를 넘으면 품질이 급격히 저하된다.',
+        '',
+        '### 향후 과제',
+        '- **확장**',
+        '  - 라우터를 계층적으로 확장하여 1M 토큰까지 적용한다.',
+      ].join('\n'),
+      core_technology: [
+        '- **Learned token router**',
+        '  - Role: assigns each token to expert blocks.',
+        '  - How it works: computes a softmax gate and keeps the top 2 experts.',
+        '  - Origin: new in this paper.',
+        '- **Block-local attention**',
+        '  - Role: limits attention to tokens routed to the same expert.',
+        '  - How it works: reuses FlashAttention kernels on each expert group.',
+        '  - Origin: adopted from FlashAttention.',
+        '- **Load balancing loss**',
+        '  - Role: prevents expert collapse.',
+        '  - How it works: adapts the Switch Transformer auxiliary loss to attention routing.',
+        '  - Origin: adopted from Switch Transformer and modified.',
+      ].join('\n'),
     },
     strengths: [
       '128K 토큰에서 처리량이 3.1배 향상된다(표 3).',
@@ -105,28 +181,96 @@
       impact: { score: 4, rationale: '장문맥 추론 비용은 널리 공유되는 문제이다.' },
     },
     core_tech: [
-      { name: '학습된 토큰 라우터(learned token router)', category: 'architecture', role: '토큰을 전문가 블록에 배정하는 핵심 구성요소(새로 제안)', description: '각 토큰에 대해 softmax 게이트를 계산하고 상위 2개 전문가를 선택한다. 라우팅 확률은 미분 가능하여 end-to-end로 학습된다.' },
-      { name: '블록 내 attention', category: 'architecture', role: '전문가 단위로 attention을 제한(차용)', description: '같은 전문가에 속한 토큰끼리만 attention을 계산하여 비용을 줄인다.' },
-      { name: '부하 균형 손실', category: 'objective_loss', role: '전문가 쏠림 방지(개선)', description: 'Switch Transformer의 보조 손실을 attention 라우팅에 맞게 변형하였다.' },
-      { name: '연속 사전학습 전환', category: 'training', role: 'dense 모델에서 초기화(새로 제안)', description: 'dense 체크포인트에서 시작해 50B 토큰을 추가 학습한다.' },
-      { name: 'FlashAttention 커널', category: 'system_infra', role: '블록 내 attention 가속(차용)', description: '전문가별 묶음을 하나의 배치로 묶어 커널을 재사용한다.' },
-      { name: 'LongBench·NIAH 평가', category: 'evaluation', role: '장문맥 성능 검증(차용)', description: '표준 장문맥 벤치마크와 바늘 찾기 과제로 품질을 측정한다.' },
+      { name: 'Learned token router', category: 'architecture', role: 'Assigns each token to expert blocks; new in this paper.', description: 'Computes a softmax gate per token and keeps the top 2 experts. The routing probabilities are differentiable, so the router is trained end to end.' },
+      { name: 'Block-local attention', category: 'architecture', role: 'Restricts attention to tokens in the same expert block (adopted).', description: 'Only tokens routed to the same expert attend to each other, which cuts the attention cost.' },
+      { name: 'Load balancing loss', category: 'objective_loss', role: 'Prevents expert collapse (modified).', description: 'Adapts the Switch Transformer auxiliary loss to attention routing.' },
+      { name: 'Continued pre-training from dense checkpoints', category: 'training', role: 'Initializes SparseFlow from a dense model (new).', description: 'Starts from a dense checkpoint and trains for 50B more tokens.' },
+      { name: 'FlashAttention kernels', category: 'system_infra', role: 'Accelerates block-local attention (adopted).', description: 'Packs each expert group into one batch so the existing kernels can be reused.' },
+      { name: 'LongBench and NIAH evaluation', category: 'evaluation', role: 'Validates long-context quality (adopted).', description: 'Measures quality on a standard long-context benchmark and the needle-in-a-haystack retrieval task.' },
     ],
     meta: { title_ko: 'SparseFlow: 학습된 토큰 라우팅을 통한 효율적인 장문맥 attention', domain_ko: '자연어처리 / 효율적 Transformer', confidence: 'high', notes: '' },
+  };
+
+  const ideas = {
+    ideas: [
+      {
+        title: '짧은 문맥에서 router를 건너뛰는 adaptive routing', category: 'limitation_fix',
+        motivation: '8K 이하 문맥에서는 router overhead 때문에 dense attention보다 오히려 느려진다.',
+        grounding: 'Section 5에서 8K 이하 입력은 7% 느려진다고 밝힌다.',
+        approach: '입력 길이와 attention entropy를 보고 router를 켤지 정하는 lightweight gate를 둔다. 가설: 짧은 입력에서는 dense attention으로 바로 가도 품질 손실이 없다.',
+        experiment: 'PG-19와 LongBench를 4K/8K/32K로 잘라 throughput과 perplexity를 측정하고, dense baseline 및 이 논문의 SparseFlow와 비교한다.',
+        expected_impact: '모든 문맥 길이에서 dense 이상의 속도를 내는 하나의 모델을 만들 수 있다.',
+        difficulty: 'low', difficulty_reason: '공개 checkpoint 위에 gate만 추가 학습하면 된다.', resources: '단일 GPU로 수일',
+        keywords_en: ['adaptive sparse attention', 'router overhead', 'dynamic computation'],
+      },
+      {
+        title: 'Hierarchical router로 1M token 문맥까지 확장', category: 'extension',
+        motivation: '저자들은 1M token 적용을 향후 과제로만 남겼다.',
+        grounding: 'Section 6의 향후 과제와 Table 3의 128K 이후 결과 부재.',
+        approach: 'Router를 coarse-to-fine 두 단계로 나누어 block 단위로 먼저 고르고 그 안에서 token을 다시 routing한다.',
+        experiment: 'RULER와 NIAH 512K/1M에서 accuracy와 memory를 측정하고 SparseFlow, Ring Attention과 비교한다.',
+        expected_impact: '1M token 입력을 단일 node에서 처리할 수 있는 효율적인 attention을 보인다.',
+        difficulty: 'high', difficulty_reason: '긴 문맥 pre-training 데이터와 대규모 학습이 필요하다.', resources: '대규모 사전학습 필요',
+        keywords_en: ['hierarchical routing', 'million-token context', 'long-context pre-training'],
+      },
+      {
+        title: 'Video-language model에 learned token routing 적용', category: 'new_application',
+        motivation: 'Video token은 text보다 훨씬 길어 attention 비용이 더 큰 병목이다.',
+        grounding: 'Section 6은 multimodal 입력을 향후 과제로 언급한다.',
+        approach: 'Frame patch token에 SparseFlow router를 붙이고 temporal locality를 routing prior로 준다.',
+        experiment: 'EgoSchema와 Video-MME에서 accuracy와 latency를 측정하고 dense attention baseline 및 SparseFlow와 비교한다.',
+        expected_impact: '긴 video 이해에서 같은 품질로 추론 비용을 줄일 수 있다.',
+        difficulty: 'medium', difficulty_reason: '공개 video-language checkpoint를 fine-tuning하면 된다.', resources: 'GPU 8장으로 1~2주',
+        keywords_en: ['video-language model', 'token routing', 'efficient video transformer'],
+      },
+      {
+        title: 'State-space model과 SparseFlow의 hybrid 구조', category: 'combination',
+        motivation: '논문은 Mamba 같은 state-space model과 비교하지 않았다.',
+        grounding: 'Table 2의 비교 대상 구성.',
+        approach: 'State-space layer가 전역 문맥을 요약하고 SparseFlow layer가 먼 token 사이의 정밀한 상호작용을 맡도록 층을 번갈아 쌓는다.',
+        experiment: 'LongBench와 PG-19에서 quality와 throughput을 측정하고 Mamba, Jamba, SparseFlow와 비교한다.',
+        expected_impact: '두 계열의 장점을 합친 long-context architecture의 설계 지침을 얻는다.',
+        difficulty: 'medium', difficulty_reason: '구조 설계와 중간 규모 pre-training이 필요하다.', resources: 'GPU 8장으로 수 주',
+        keywords_en: ['state space model', 'hybrid architecture', 'Mamba'],
+      },
+      {
+        title: 'Routing 결정의 해석 가능성 분석', category: 'analysis_theory',
+        motivation: 'Router가 어떤 token 쌍을 묶는지에 대한 분석이 없다.',
+        grounding: 'Figure 4는 load 분포만 보여 준다.',
+        approach: 'Routing 결과를 syntactic dependency와 coreference annotation에 맞춰 보고, expert별로 담당하는 언어 현상을 분류한다.',
+        experiment: 'OntoNotes coreference와 UD treebank에서 같은 expert에 배정된 token 쌍의 비율을 측정하고 random routing과 비교한다.',
+        expected_impact: 'Learned routing이 언어 구조를 반영하는지 밝혀 router 설계에 근거를 준다.',
+        difficulty: 'low', difficulty_reason: '학습 없이 공개 checkpoint의 routing만 분석한다.', resources: '단일 GPU로 수일',
+        keywords_en: ['interpretability', 'routing analysis', 'attention probing'],
+      },
+    ],
+    open_questions: [
+      'Expert 수 $k$가 32를 넘을 때 품질이 떨어지는 원인은 무엇인가?',
+      'Routing이 fine-tuning 이후에도 안정적으로 유지되는가?',
+      'Load balancing loss의 계수 $\\lambda$를 바꾸면 throughput과 quality의 trade-off가 어떻게 달라지는가?',
+    ],
+    notes: '모든 제안은 논문 본문에 근거하며, 확인할 수 없는 부분은 가설로 표시하였다.',
   };
 
   function translationFor(perCall) {
     const m = perCall.match(/^- 섹션:\s*(.+)$/m);
     const title = m ? m[1].trim() : '섹션';
     if (/참고문헌|References/i.test(title)) return '> 참고문헌 목록은 원문 13–14 페이지를 참조한다. (총 42편)\n';
+    const num = (/^([A-Za-z]|\d+)\b/.exec(title) || [])[1] || '1';
+    const base = /\(계속,/.test(title) ? 2 : 0;
+    const merged = title.split(';').slice(1).map((t) => t.replace(/\s*\((?:계속, )?\d+\/\d+\)$/, '').trim()).filter(Boolean);
     return [
       `## ${title}`,
       '',
       '본 절에서는 제안 기법의 구조를 설명한다. 라우터(router)는 각 토큰 $x_i$에 대해 라우팅 확률을 계산하며, 전문가 수 $k$가 커질수록 블록 크기는 $n/k$로 줄어든다 [12]. 조건 $x < y$가 성립하면 토큰은 첫 번째 전문가로 보내진다.',
       '',
+      `### ${num}.${base + 1} 라우팅 구조`,
+      '',
       '$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}\\left(\\frac{QK^{\\top}}{\\sqrt{d_k}}\\right) V \\quad (1)$$',
       '',
       '**그림 1.** SparseFlow 층의 전체 구조. 토큰은 라우터를 거쳐 전문가 블록으로 보내진다.',
+      '',
+      `#### ${num}.${base + 1}.1 게이트 계산`,
       '',
       '**표 1.** 문맥 길이별 attention 시간 비율',
       '',
@@ -135,6 +279,8 @@
       '| 8K | 23% | 18,200 |',
       '| 32K | 48% | 6,900 |',
       '| 128K | **71%** | 1,420 |',
+      '',
+      `### ${num}.${base + 2} 전문가 수 $k$의 영향`,
       '',
       '- 라우팅 확률은 미분 가능하다.',
       '- 부하 균형 손실(load balancing loss)은 $\\lambda = 0.01$로 가중한다.',
@@ -146,6 +292,7 @@
       '',
       '<script>alert("xss")</script> 이 문장은 살균 검증용이다. 밑줄_변수_이름과 *강조* 표기도 포함한다 [각주 1].',
       '',
+      ...merged.flatMap((t) => [`## ${t}`, '', '이 절은 함께 묶여 번역된 다음 섹션의 본문이다. 제안 기법이 기존 연구와 어떻게 이어지는지 정리한다.', '']),
       '**각주**',
       '',
       '1. 모든 실험은 A100 80GB 1장에서 수행되었다.',
@@ -224,20 +371,17 @@
   ];
   const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   async function s256(verifier) { return b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier)))); }
-  // 브라우저는 서명을 검증할 수 없으므로 클레임만 담고 서명 세그먼트는 가짜로 채운다
   function idToken(clientId, nonce) {
     const now = Math.floor(Date.now() / 1000);
     const payload = { iss: 'https://auth.openai.com', aud: clientId, sub: 'user_test', exp: now + 3600, iat: now, email: 'tester@example.com', name: 'Tester' };
     if (nonce) payload.nonce = nonce;
     return [b64url(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'mock' }))), b64url(enc.encode(JSON.stringify(payload))), 'mock-signature'].join('.');
   }
-  // 토큰 회전 상태는 내비게이션·새로고침을 넘어야 하므로 sessionStorage에 둔다 (seq = 마지막으로 발급한 번호)
   const AUTH_KEY = '__mock.auth';
   const authStore = {
     get() { try { return Object.assign({ seq: 0, usedCodes: [] }, JSON.parse(sessionStorage.getItem(AUTH_KEY)) || {}); } catch { return { seq: 0, usedCodes: [] }; } },
-    set(v) { try { sessionStorage.setItem(AUTH_KEY, JSON.stringify(v)); } catch { /* 저장 불가 */ } },
+    set(v) { try { sessionStorage.setItem(AUTH_KEY, JSON.stringify(v)); } catch {} },
   };
-  // 인가 단계는 Playwright 라우트가 처리하므로 challenge·code·nonce는 노출 함수(또는 전역 객체)로 받는다
   async function pendingAuth() {
     try { return typeof window.__mockAuth === 'function' ? await window.__mockAuth() : (window.__mockAuth || null); } catch { return null; }
   }
@@ -286,7 +430,6 @@
       if (p.get('redirect_uri') !== pending.redirectUri) return fail('invalid_grant', 'redirect_uri mismatch');
       if (p.get('resource') !== RESOURCE) return fail('invalid_target', 'resource mismatch');
       if (!p.get('code_verifier') || (await s256(p.get('code_verifier'))) !== pending.challenge) return fail('invalid_grant', 'PKCE verification failed');
-      // 첫 교환만 실패시킨다. 플래그는 내비게이션을 넘어야 하므로 authStore에 둔다
       if (c.exchangeFailOnce && !st.exchangeFailed) { st.exchangeFailed = true; st.usedCodes.push(pending.code); authStore.set(st); return fail('invalid_grant', 'authorization code is invalid or expired'); }
       st.seq += 1;
       st.usedCodes.push(pending.code);
@@ -295,7 +438,6 @@
       return tokenResponse({ seq: st.seq, scope, nonce: pending.nonce, withId: true });
     }
     if (grant === 'refresh_token') {
-      // 갱신 요청이 오래 걸리는 동안 사용자가 중단하는 경우를 재현한다
       if (c.refreshDelayMs) await sleep(c.refreshDelayMs, init.signal || null);
       if (c.refreshFails) return fail('invalid_grant', 'refresh token is not valid');
       const m = /^rt-(\d+)$/.exec(p.get('refresh_token') || '');
@@ -333,13 +475,14 @@
     }
     return true;
   }
-  // 플랜 경로에는 metadata가 없고 text.format도 제거될 수 있어 프롬프트 본문으로 작업 종류를 판별한다
   function inferTask(body, perCall) {
     if (body.metadata && body.metadata.task) return body.metadata.task;
     const name = body.text && body.text.format && body.text.format.name;
     if (name === 'paper_outline') return 'outline';
     if (name === 'paper_summary') return 'summary';
+    if (name === 'paper_ideas') return 'ideas';
     if (/\[outline\]|total_pages/.test(perCall)) return 'outline';
+    if (/keywords_en/.test(perCall)) return 'ideas';
     if (/tldr_ko/.test(perCall)) return 'summary';
     return 'translate';
   }
@@ -352,20 +495,16 @@
     if (bad) { event('violation', { param: bad }); return planError('subscription_sharing_unsupported_capability', 400, bad, `Unsupported parameter: '${bad}' is not supported with ChatGPT plan usage.`); }
     const p = c.planUnsupportedParamOnce;
     if (p && hasPath(body, p) && once('planParam')) { event('paramOnce', { param: p }); return planError('subscription_sharing_unsupported_capability', 400, p, `Unsupported parameter: '${p}' is not supported with ChatGPT plan usage.`); }
-    // 경로가 남아 있는 한 매번 거부한다: 앱이 경로를 세션에 기록해 이후 호출부터 빼는지 확인하는 용도
     const pa = c.planUnsupportedParamAlways;
     if (pa && hasPath(body, pa)) { event('paramAlways', { param: pa }); return planError('subscription_sharing_unsupported_capability', 400, pa, `Unsupported parameter: '${pa}' is not supported with ChatGPT plan usage.`); }
     if (task === 'translate' && c.planLimitOnce && once('planLimit')) { event('limit429'); return planError(LIMIT_CODE, 429, null, LIMIT_MSG); }
-    // 플랜 전용이 아닌 400(param 포함)은 파라미터 제거 대상이 아니어야 한다
     if (task === 'translate' && c.planContextOnce && once('planContext')) { event('contextLength', { param: 'input' }); return planError('context_length_exceeded', 400, 'input', 'Your input exceeds the context window of this model.'); }
     return null;
   }
 
   const PROXY_PREFIX = '/__rpt/openai';
-  // 중계 기능이 없는 정적 서버(python -m http.server)의 응답: GET·HEAD는 HTML 404, POST·DELETE는 do_POST가 없어 HTML 501
   const htmlError = (status, message) => new Response(`<!DOCTYPE HTML>\n<html><head><title>Error response</title></head><body><h1>Error response</h1><p>Error code: ${status}</p><p>Message: ${message}</p></body></html>`, { status, headers: { 'content-type': 'text/html;charset=utf-8' } });
   const staticServerError = (method) => (method === 'GET' || method === 'HEAD' ? htmlError(404, 'File not found.') : htmlError(501, `Unsupported method ('${method}').`));
-  // serve.py가 api.openai.com에 연결하지 못했을 때의 502
   const upstreamDown = () => jsonResponse({ error: { message: 'OpenAI 서버에 연결하지 못했습니다.', code: 'proxy_upstream' } }, 502);
 
   window.fetch = async (input, init = {}) => {
@@ -374,11 +513,9 @@
     let viaProxy = false;
     let u = null;
     try { u = new URL(url, location.href); } catch { u = null; }
-    // 같은 주소의 /__rpt/ 경로는 serve.py처럼 동작한다: 상태 확인에 답하고 중계 호출은 api.openai.com 주소로 되돌려 아래 API mock에 넘긴다
     if (u && u.origin === location.origin) {
       if (u.pathname === '/__rpt/health') return cfg().proxyMissing ? staticServerError(method) : jsonResponse({ ok: true, proxy: true, version: '1.2.0' });
       if (u.pathname.startsWith(PROXY_PREFIX + '/')) {
-        // API mock까지 가지 못한 중계 호출 수: 앱이 재시도 없이 멈추는지 확인하는 용도
         if (cfg().proxyMissing) { window.__mockProxyHits++; return staticServerError(method); }
         if (cfg().proxyUpstreamDown) { window.__mockProxyHits++; return upstreamDown(); }
         url = 'https://api.openai.com' + u.pathname.slice(PROXY_PREFIX.length) + u.search;
@@ -444,13 +581,15 @@
       else if (task === 'summary') {
         text = JSON.stringify(summary);
         if (c.summaryIncompleteOnce && once('summaryIncomplete')) { text = text.slice(0, 1500); status = 'incomplete'; }
+      } else if (task === 'ideas') {
+        if (c.ideasFailOnce && once('ideasFail')) return jsonResponse({ error: { message: 'Mock ideas failure', type: 'invalid_request_error', param: null, code: 'mock_ideas_failure' } }, 400);
+        text = JSON.stringify(ideas);
       } else {
         if (c.rateLimitOnce && /\(계속, 2\/2\)/.test(perCall) && once('429')) return jsonResponse({ error: { message: 'Rate limit reached for requests', type: 'rate_limit_error', param: null, code: 'rate_limit_exceeded' } }, 429);
         text = translationFor(perCall);
         if (c.translateIncompleteOnce && once('translateIncomplete')) { text = text.slice(0, 420); status = 'incomplete'; }
       }
-      // text.format 없이 JSON을 요청받으면 실제 모델처럼 코드 펜스를 두른다 (관대한 파서 검증용)
-      if (plan && (task === 'outline' || task === 'summary') && !(body.text && body.text.format)) text = '```json\n' + text + '\n```';
+      if (plan && task !== 'translate' && !(body.text && body.text.format)) text = '```json\n' + text + '\n```';
       await sleep(task === 'translate' ? 100 : 400, signal);
       let failAfterFirstDelta = null;
       if (plan && task === 'translate' && c.planFailMidStreamOnce && once('planFailMid')) {

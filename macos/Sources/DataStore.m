@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <unistd.h>
 
-// 프로브 빌드만 -D로 이름을 바꿔 SPI가 없는 환경의 대체 경로를 시험한다.
 #ifndef RPT_SPI_CONFIGURATION_CLASS
 #define RPT_SPI_CONFIGURATION_CLASS "_WKWebsiteDataStoreConfiguration"
 #endif
@@ -25,7 +24,7 @@ typedef struct {
 } RPTStorageLocation;
 
 static const RPTStorageLocation kStorageLocations[] = {
-    {"setGeneralStorageDirectory:", "Default", NO},
+    {"setGeneralStorageDirectory:", "Origins", NO},
     {"_setWebStorageDirectory:", "LocalStorage", NO},
     {"_setIndexedDBDatabaseDirectory:", "IndexedDB", NO},
     {"_setWebSQLDatabaseDirectory:", "WebSQL", NO},
@@ -66,7 +65,6 @@ static WKWebsiteDataStore *RPTMakeDataStoreUnguarded(NSURL *root) {
     if (![WKWebsiteDataStore instancesRespondToSelector:storeInit])
         return RPTFail(@"WebKit에 -[WKWebsiteDataStore " RPT_SPI_INIT_WITH_CONFIGURATION "]가 없습니다");
 
-    // -init은 ~/Library의 기본 경로로 초기화한 뒤 아래 설정으로 덮어쓰므로 initWithDirectory:를 먼저 쓴다.
     SEL directoryInit = sel_registerName(RPT_SPI_INIT_WITH_DIRECTORY);
     id configuration = [configurationClass instancesRespondToSelector:directoryInit]
         ? ((RPTInitWithObject)objc_msgSend)([configurationClass alloc], directoryInit, root)

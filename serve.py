@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# 논문 함께 읽기 로컬 서버: 정적 파일을 제공하고 ChatGPT 플랜 호출(/__rpt/openai/v1/...)을
-# 같은 주소에서 api.openai.com 으로 중계해 브라우저의 CORS 차단을 피한다.
-# 토큰은 요청 헤더를 그대로 전달할 뿐 저장하거나 로그에 남기지 않는다.
 import argparse
 import http.client
 import json
@@ -20,12 +17,10 @@ VERSION = '1.2.0'
 PROXY_PREFIX = '/__rpt/openai'
 HEALTH_PATH = '/__rpt/health'
 UPSTREAM = os.environ.get('RPT_UPSTREAM') or 'https://api.openai.com'
-# 연결 단계만 짧게 제한한다: 응답 없는 주소(IPv6 경로 불량 등)에서 요청마다 OS의 SYN 제한 시간만큼 멈추지 않게
 CONNECT_TIMEOUT = 15
 UPSTREAM_TIMEOUT = 600
 LOOPBACK = ('127.0.0.1', '::1', 'localhost')
 FORWARD_HEADERS = ('Authorization', 'Content-Type', 'Accept')
-# 본문은 그대로 전달하므로 content-encoding 은 남긴다 (상위 서버가 identity 요청을 무시해도 브라우저가 풀 수 있게)
 DROP_HEADERS = {'connection', 'keep-alive', 'transfer-encoding', 'content-length',
                 'alt-svc', 'set-cookie', 'strict-transport-security'}
 NOT_FOUND = {'error': {'message': '중계 경로가 아닙니다.', 'code': 'proxy_not_found'}}
@@ -34,8 +29,8 @@ LENGTH_REQUIRED = {'error': {'message': '요청 본문에는 Content-Length 가 
 MISDIRECTED = {'error': {'message': '루프백 주소(127.0.0.1, localhost)로만 접속할 수 있습니다.', 'code': 'proxy_misdirected'}}
 
 
+# Upstream path for a relay request, or None if it leaves /v1/.
 def relay_target(path):
-    # 접두사 뒤의 경로가 정규화 후에도 /v1/ 아래여야 중계한다 (.. 등으로 벗어나면 거부)
     if not path.startswith(PROXY_PREFIX + '/'):
         return None
     target = path[len(PROXY_PREFIX):]
@@ -47,7 +42,6 @@ def relay_target(path):
 
 class Server(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
-        # 클라이언트가 응답 전에 끊은 요청(탭 닫기, 새로 고침)은 역추적을 찍지 않는다
         if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
             super().handle_error(request, client_address)
 
@@ -80,7 +74,6 @@ class Handler(SimpleHTTPRequestHandler):
     do_DELETE = do_POST
 
     def host_allowed(self):
-        # DNS 리바인딩으로 다른 도메인이 127.0.0.1을 가리켜도 중계를 쓰지 못하게 루프백 Host 만 받는다 (Host 가 없는 HTTP/1.0 요청은 허용)
         raw = (self.headers.get('Host') or '').strip().lower()
         if raw.startswith('['):
             host = raw[1:raw.find(']')]
@@ -95,7 +88,6 @@ class Handler(SimpleHTTPRequestHandler):
         return False
 
     def log_message(self, fmt, *args):
-        # 콜백 코드 등 쿼리 문자열은 로그에 남기지 않는다 (헤더 값은 어디서도 기록하지 않음)
         super().log_message(fmt, *(re.sub(r'\?\S*', '', a) if isinstance(a, str) else a for a in args))
 
     def send_json(self, status, obj):
@@ -119,8 +111,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self.relay(target + ('?' + parts.query if parts.query else ''))
 
+    # Closes the upstream socket when the client disconnects.
     def watch_client(self, upstream_sock):
-        # HTTP/1.0 응답 중 클라이언트는 더 보낼 것이 없으므로 수신이 끝나면 연결이 끊긴 것이다
         try:
             while self.connection.recv(4096):
                 pass
@@ -133,7 +125,6 @@ class Handler(SimpleHTTPRequestHandler):
             pass
 
     def relay(self, target):
-        # 본문은 Content-Length 로만 읽는다. chunked 요청을 빈 본문으로 넘기면 상위 서버의 엉뚱한 400 이 되므로 411 로 알린다
         if self.headers.get('Content-Length') is None and self.headers.get('Transfer-Encoding'):
             self.send_json(HTTPStatus.LENGTH_REQUIRED, LENGTH_REQUIRED)
             return
@@ -156,7 +147,6 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 conn.connect()
                 conn.sock.settimeout(UPSTREAM_TIMEOUT)
-                # 클라이언트가 끊으면 업스트림 소켓을 닫아 OpenAI 쪽 요청도 함께 취소한다
                 threading.Thread(target=self.watch_client, args=(conn.sock,), daemon=True).start()
                 conn.request(self.command, up.path.rstrip('/') + target, body=body, headers=headers)
                 resp = conn.getresponse()
@@ -182,7 +172,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (OSError, http.client.HTTPException):
-            # 클라이언트가 끊었거나 업스트림 스트림이 중단된 경우: 아래에서 업스트림 연결을 닫는다
             pass
         finally:
             conn.close()

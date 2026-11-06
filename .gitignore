@@ -1,4 +1,3 @@
-# 비밀값·로컬 설정
 .env
 .env.*
 !.env.example
@@ -9,29 +8,28 @@
 secrets/
 credentials*.json
 
-# OS / 편집기
 .DS_Store
 .vscode/
 .idea/
 *.swp
 
-# Node (test/)
 node_modules/
 npm-debug.log*
 test/out/
 
-# Python
 __pycache__/
 *.pyc
 .venv/
 
-# macOS 앱 빌드 산출물
 macos/build/
 DerivedData/
 *.app
 *.dSYM/
 xcuserdata/
 
-# 로그·임시 파일
 *.log
 tmp/
+
+macos/data/
+macos/exports/
+macos/dist/

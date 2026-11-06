@@ -124,19 +124,40 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
   const SUMMARY_PROMPT = `첨부된 논문 PDF 전체를 정독하고, 아래 요구사항에 맞는 JSON 하나만 출력하라. 이 결과는 독자가 논문을 읽지 않고도 핵심을 정확히 파악하고, 시각화(파이프라인 흐름도·지표 표·레이더 차트·장단점 비교·핵심기술 칩)를 그리는 데 사용된다. 그러므로 "풍부하되 정확하게", 특히 모든 수치는 논문에서 그대로 복사해야 한다.
 
 {{GLOSSARY_BLOCK}}
-(위 용어집이 비어 있지 않으면 그 한국어 표기를 반드시 따른다.)
+(위 용어집이 비어 있지 않으면 그 한국어 표기를 반드시 따른다. 단, 아래 [언어 예외]의 핵심기술 필드에는 적용하지 않는다.)
+
+[언어 예외 — 핵심기술은 영어]
+- sections.core_technology와 core_tech 각 항목의 name·role·description은 영어로 작성한다. 이 필드에는 공통 원칙 1(한국어 출력), 공통 원칙 3(전문용어 표기 규약), [공통 규칙] 3(전문용어), 위 용어집의 한국어 표기를 적용하지 않는다.
+- 이 필드에서는 논문이 쓰는 영어 용어를 그대로 쓴다. 전문용어를 번역하지 않고 "한국어(English)" 병기도 하지 않는다.
+- 그 밖의 모든 필드(tldr_ko, glance, 나머지 sections, strengths, limitations, pipeline, metrics의 note, scores, meta)는 기존 규칙대로 한국어로 작성한다.
 
 [tldr_ko]
 - 논문 전체를 한 문장(60자 내외)으로: "무엇을 위해 무엇을 제안하여 어떤 결과를 얻었다".
 
 [glance] 한눈에 보기용 세 문장. problem(문제): 논문이 푸는 문제를 한 문장으로, method(방법): 제안 기법의 핵심을 한 문장으로, result(결과): 대표 결과를 한 문장으로(수치 포함 가능). 각각 한국어 한 문장(40자 내외)으로 쓴다.
 
-[sections] 다섯 항목 모두 마크다운 문자열이며, 각 항목은 최소 3~6개 문단 또는 글머리 목록으로 충실히 채운다. 수식은 $...$로 쓸 수 있다.
-1. problem_definition (문제정의): 논문이 다루는 과제(task)의 정의, 입력/출력, 기존 방법이 실패하는 지점과 그 원인, 왜 이 문제가 중요한지, 논문이 명시한 연구 질문 또는 기여(contribution) 목록. 기존 방법의 한계를 말할 때는 논문이 근거로 드는 수치나 사례를 함께 적는다.
-2. proposed_method (해결방법(제안 기법)): 전체 구조 개요 → 각 구성요소의 동작 원리(핵심 수식 포함) → 학습 목표/손실 함수 → 학습·추론 절차 → 기존 방법과의 본질적 차이. 하이퍼파라미터·모델 크기·학습 데이터 규모 등 논문에 적힌 설정값을 구체적으로 포함한다.
-3. results_and_strengths (결과(정확한 수치) 및 장점): 주요 실험 결과를 "데이터셋 / 지표 / 비교 대상 / 수치 / 개선폭" 형태로 기술한다. 모든 수치는 논문 표·그림에서 그대로(소수점 자릿수 포함) 옮기고 어느 표(Table N)에서 가져왔는지 적는다. 제거 실험(ablation), 효율성(속도·메모리·파라미터 수), 정성적 결과를 포함하고, 이 결과가 보여 주는 장점을 정리한다. 증가/감소 표현은 절대값 차이(예: +2.3 point)와 상대 비율(예: 12% 상대 향상)을 구분해 쓴다.
-4. weaknesses_and_limitations (단점 및 한계점): 아래 세 범주를 소제목(### 단점, ### 한계점, ### 향후 과제)으로 나누어 기술한다. 단점은 저자가 인정하지 않더라도 비판적 독자가 지적할 문제(실험 설계의 공정성, 비교 대상의 적절성, 통계적 유의성 미보고, 재현 정보 부족, 일반화 가능성, 계산 비용 등), 한계점은 저자가 논문에서 직접 밝힌 제약, 향후 과제는 저자가 제안한 후속 연구 방향. 단점을 지적할 때 어떤 근거(어느 표, 어느 문단)에서 비롯된 판단인지 밝힌다.
-5. core_technology (핵심기술): 논문을 이해·구현하는 데 반드시 알아야 할 기술 요소를 "기술명 — 역할 — 작동 방식" 형태로 나열하고, 선행 기술에서 가져온 것과 이 논문이 새로 고안한 것을 구분한다.
+[sections] 다섯 항목 모두 마크다운 문자열이며, 긴 문단 대신 한눈에 훑어볼 수 있는 계층형 목록(인덱스)으로 충실히 채운다.
+- 1단계: 하위 주제를 나타내는 글머리 3~7개. 각 줄은 짧은 굵은 라벨로 시작한다(예: "- **과제 정의**", "- **기존 방법의 한계**", "- **핵심 아이디어**"). 라벨 줄에는 라벨만 쓰거나 짧은 구절 하나만 덧붙인다.
+- 2단계: 1단계 아래 들여 쓴 글머리로, 한 항목에 사실이나 주장 하나를 짧은 한 문장으로 쓴다. 굵은 글씨는 핵심 수치와 모델·데이터셋·용어 이름에만 아껴 쓴다.
+- 3단계: 꼭 필요할 때만 쓴다(예: 벤치마크 항목 아래 데이터셋별 수치).
+- 순서가 있는 단계(제안 기법의 처리 단계, 학습·추론 절차)는 번호 목록(1. 2. 3.)으로 쓴다.
+- 들여쓰기: "- " 아래 하위 항목은 공백 2칸, "1. " 아래 하위 항목은 공백 3칸으로 들여 쓰고 탭 문자는 쓰지 않는다.
+- 두 문장을 넘는 문단을 쓰지 않는다. 출처 표기(예: "(Table 2)")는 해당 항목 끝에 붙인다. 수식은 $...$로 쓸 수 있다.
+섹션별 내용:
+1. problem_definition (문제정의): 1단계 라벨 예시 — 과제 정의 / 입력·출력 / 기존 방법의 한계 / 왜 중요한가 / 연구 질문·기여. 논문이 다루는 과제(task)의 정의, 입력/출력, 기존 방법이 실패하는 지점과 그 원인, 왜 이 문제가 중요한지, 논문이 명시한 연구 질문 또는 기여(contribution) 목록을 다룬다. 기존 방법의 한계를 말할 때는 논문이 근거로 드는 수치나 사례를 함께 적는다.
+2. proposed_method (해결방법(제안 기법)): 1단계 라벨 예시 — 전체 구조 / 구성 요소 / 학습 목표·손실 함수 / 학습·추론 절차 / 기존 방법과의 차이 / 주요 설정값. 각 구성요소의 동작 원리(핵심 수식 포함)와 기존 방법과의 본질적 차이를 쓰고, 하이퍼파라미터·모델 크기·학습 데이터 규모 등 논문에 적힌 설정값을 구체적으로 포함한다.
+3. results_and_strengths (결과 및 장점): 1단계 라벨은 벤치마크 또는 실험 묶음마다 하나씩 두고 그 아래 하위 항목으로 지표 · 수치 · 비교 대상 · 개선폭 · 출처를 적은 뒤, 제거 실험 / 효율성 / 정성적 결과 / 장점 라벨을 이어서 둔다. 모든 수치는 논문 표·그림에서 그대로(소수점 자릿수 포함) 옮기고 어느 표(Table N)에서 가져왔는지 적는다. 효율성에는 속도·메모리·파라미터 수를 포함한다. 증가/감소 표현은 절대값 차이(예: +2.3 point)와 상대 비율(예: 12% 상대 향상)을 구분해 쓴다.
+4. weaknesses_and_limitations (단점 및 한계점): 아래 세 범주를 소제목(### 단점, ### 한계점, ### 향후 과제)으로 나누고, 각 소제목 아래를 같은 계층형 목록으로 쓴다. 단점은 저자가 인정하지 않더라도 비판적 독자가 지적할 문제(실험 설계의 공정성, 비교 대상의 적절성, 통계적 유의성 미보고, 재현 정보 부족, 일반화 가능성, 계산 비용 등), 한계점은 저자가 논문에서 직접 밝힌 제약, 향후 과제는 저자가 제안한 후속 연구 방향. 단점을 지적할 때 어떤 근거(어느 표, 어느 문단)에서 비롯된 판단인지 밝힌다.
+5. core_technology (핵심기술, 영어로 작성): 논문을 이해·구현하는 데 반드시 알아야 할 기술 요소마다 1단계 글머리 하나를 두고 굵은 기술명으로 시작한다(예: "- **Scaled dot-product attention**"). 그 아래 하위 항목으로 "Role:", "How it works:", "Origin:"을 영어로 쓰며, Origin에는 이 논문이 새로 고안했는지("new in this paper") 선행 기술에서 가져왔는지("adopted from …")를 밝힌다.
+
+[sections 형식 예시] 들여쓰기와 계층만 참고하고, 내용은 논문에 맞게 쓴다.
+- **기존 방법의 한계**
+  - 순환 구조는 위치별로 순차 계산해야 해 병렬화가 어렵다 (Section 1).
+  - 긴 문장에서 먼 위치 사이의 의존성을 학습하기 어렵다.
+- **학습·추론 절차**
+  1. 입력 문장을 토큰으로 나눈다.
+  2. 인코더가 문맥 표현을 만든다.
+     - 층 수는 **6**이다 (Table 3).
 
 [strengths] 논문이 보여 주는 장점 2~6개. 각 항목은 한 문장이며 수치를 포함할 수 있다(예: "ImageNet top-1 83.4%로 ViT-B/16 대비 +1.6 point"). sections.results_and_strengths에 적은 장점과 일치해야 한다.
 
@@ -160,7 +181,7 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
 - clarity(명료성): 1=구조·표기가 혼란스러움, 3=따라갈 수 있음, 5=수식·그림·서술이 매우 명확.
 - impact(파급력): 1=좁은 적용 범위, 3=해당 하위 분야에 유용, 5=여러 분야에 영향을 줄 가능성.
 
-[core_tech] 핵심기술 5~10개. name: 기술명(필요 시 "한국어(English)"), category: architecture(모델 구조), training(학습 방법/절차), objective_loss(손실·목적함수), data(데이터 구성·증강·수집), optimization(최적화·효율화·압축), inference(추론 기법·디코딩), evaluation(평가 방법·지표), theory(이론적 분석·증명), system_infra(시스템·하드웨어·분산), other. role: 이 논문에서의 역할 한 문장(새로 제안/차용/개선 여부 포함). description: 작동 원리 2~3문장.
+[core_tech] 핵심기술 5~10개. name·role·description은 영어로 쓴다([언어 예외] 참조). name: 논문이 쓰는 영어 기술명 그대로(예: "Multi-head attention", "Label smoothing"), category: architecture(모델 구조), training(학습 방법/절차), objective_loss(손실·목적함수), data(데이터 구성·증강·수집), optimization(최적화·효율화·압축), inference(추론 기법·디코딩), evaluation(평가 방법·지표), theory(이론적 분석·증명), system_infra(시스템·하드웨어·분산), other. role: 이 논문에서의 역할 한 문장(새로 제안/차용/개선 여부 포함). description: 작동 원리 2~3문장.
 
 [meta] title_ko: 한국어 제목. domain_ko: 세부 분야(예: "자연어처리 / 검색 증강 생성"). confidence: 수치 추출과 분석의 확신도(high=표가 명확히 읽힘, medium=일부 표/그림 해석 필요, low=스캔 품질 저하 등으로 상당 부분 불확실). notes: 독자가 알아야 할 주의사항(예: "Table 3의 일부 값은 그림에서만 제시되어 제외함"). 없으면 "".
 
@@ -291,6 +312,75 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
     additionalProperties: false
   };
 
+  const IDEAS_PROMPT = `첨부된 논문 PDF 전체를 정독하고, 이 논문에서 출발해 대학원생이나 연구자가 실제로 시작할 수 있는 후속 연구 주제 4~6개를 제안하라. 아래 요구사항에 맞는 JSON 하나만 출력한다.
+
+[언어]
+- 문장은 한국어 학술체로 쓰되, 모든 전문용어와 방법·모델·데이터셋·벤치마크·지표 이름은 해당 분야에서 쓰는 영어 표기 그대로 둔다(예: "contrastive learning으로 encoder를 사전학습한 뒤 retrieval 성능을 비교한다").
+- 전문용어를 한국어로 번역하지 않고 "한국어(English)" 병기도 하지 않는다. 이 규칙은 공통 원칙 3(전문용어 표기 규약), [공통 규칙] 3(전문용어), 용어집의 한국어 표기보다 우선한다.
+- keywords_en은 전부 영어로 쓴다.
+- 수식이 꼭 필요하면 $...$ 인라인 수식으로 짧게 쓰고(예: "$k > 32$"), 블록 수식($$)은 쓰지 않는다. keywords_en에는 수식을 넣지 않는다.
+
+[근거]
+- 모든 아이디어는 논문 속 구체적 근거에서 출발한다: 저자가 밝힌 한계, 실패 사례, 제거 실험(ablation)의 빈틈, 시험하지 않은 설정이나 가정, 계산 비용 병목 등.
+- grounding에는 그 근거와 논문 속 위치를 함께 적는다(예: "Table 3", "Section 6", "Figure 4").
+- 논문에 없는 사실·수치를 지어내지 않는다. 논문으로 확인할 수 없는 추측은 그 부분 앞에 "가설:"이라고 표시한다.
+
+[다양성]
+- 아이디어마다 종류가 겹치지 않게 category를 고른다: limitation_fix(한계 극복), extension(확장·일반화), new_application(새로운 응용·도메인), combination(다른 연구 흐름과 결합), efficiency(효율화), analysis_theory(분석·이론), dataset_benchmark(데이터·벤치마크).
+- 서로 비슷한 아이디어를 두 번 내지 않는다. difficulty가 low인 아이디어를 최소 하나 포함한다.
+
+[ideas 각 항목]
+- title: 연구 주제 한 줄(40자 내외).
+- category: 위 일곱 값 중 하나.
+- motivation: 이 연구가 왜 필요한지 1~2문장.
+- grounding: 출발점이 된 논문 속 근거와 그 위치.
+- approach: 구체적인 접근 방법 2~4문장.
+- experiment: 검증 실험 계획. 사용할 datasets/benchmarks, metrics, baseline을 적고 baseline에는 이 논문의 방법을 반드시 포함한다.
+- expected_impact: 성공했을 때 기대할 수 있는 효과 1~2문장.
+- difficulty: low, medium, high 중 하나. difficulty_reason: 그렇게 판단한 이유 한 문장.
+- resources: 대략 필요한 자원(예: "단일 GPU로 수일", "대규모 사전학습 필요", "공개 checkpoint와 API 호출만 필요").
+- keywords_en: 선행 연구 검색에 쓸 영어 키워드 3~6개.
+
+[open_questions] 논문이 답하지 않고 남긴 질문 2~5개(한국어 문장, 전문용어는 영어).
+
+[notes] 제안 전체에 대한 주의사항. 없으면 "".
+
+스키마에 맞는 JSON 객체 하나만 출력하고 다른 텍스트는 출력하지 않는다.`;
+
+  const IDEAS_SCHEMA = {
+    type: 'object',
+    properties: {
+      ideas: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            category: {
+              type: 'string',
+              enum: ['limitation_fix', 'extension', 'new_application', 'combination', 'efficiency', 'analysis_theory', 'dataset_benchmark']
+            },
+            motivation: { type: 'string' },
+            grounding: { type: 'string' },
+            approach: { type: 'string' },
+            experiment: { type: 'string' },
+            expected_impact: { type: 'string' },
+            difficulty: { type: 'string', enum: ['low', 'medium', 'high'] },
+            difficulty_reason: { type: 'string' },
+            resources: { type: 'string' },
+            keywords_en: { type: 'array', items: { type: 'string' } }
+          },
+          required: ['title', 'category', 'motivation', 'grounding', 'approach', 'experiment', 'expected_impact', 'difficulty', 'difficulty_reason', 'resources', 'keywords_en'],
+          additionalProperties: false
+        }
+      },
+      open_questions: { type: 'array', items: { type: 'string' } },
+      notes: { type: 'string' }
+    },
+    required: ['ideas', 'open_questions', 'notes'],
+    additionalProperties: false
+  };
+
   const TRANSLATION_TEMPLATE = `첨부된 논문 PDF에서 아래에 지정한 섹션 하나만을 한국어로 완역하라. 결과는 마크다운 본문만 출력한다.
 
 [번역 대상]
@@ -385,7 +475,6 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
     const merged = secs.length > 1;
     const split = chunk.partCount > 1;
     const first = secs[0] || {};
-    // "섹션: {{SECTION_NUMBER}} {{SECTION_TITLE}}" 줄에서 첫 번호가 중복되지 않도록 첫 섹션은 제목만 넣는다
     let title = secs.length ? [first.titleEn || '', ...secs.slice(1).map(sectionLabel)].join('; ') : `${chunk.startPage}–${chunk.endPage} 페이지 전체`;
     if (split) title += chunk.partIndex === 1 ? ` (${chunk.partIndex}/${chunk.partCount})` : ` (계속, ${chunk.partIndex}/${chunk.partCount})`;
     const extras = [];
@@ -408,6 +497,10 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
     return SUMMARY_PROMPT.replace('{{GLOSSARY_BLOCK}}', block);
   }
 
+  function buildIdeasPrompt() {
+    return IDEAS_PROMPT;
+  }
+
   window.RPT_PROMPTS = Object.freeze({
     SYSTEM,
     COMMON_RULES,
@@ -415,10 +508,13 @@ glossary 예시: {"en":"knowledge distillation","ko":"지식 증류"}, {"en":"se
     OUTLINE_SCHEMA,
     SUMMARY_PROMPT,
     SUMMARY_SCHEMA,
+    IDEAS_PROMPT,
+    IDEAS_SCHEMA,
     TRANSLATION_TEMPLATE,
     DEFAULT_GLOSSARY,
     renderGlossary,
     buildTranslationPrompt,
-    buildSummaryPrompt
+    buildSummaryPrompt,
+    buildIdeasPrompt
   });
 })();

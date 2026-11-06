@@ -10,6 +10,8 @@ const MOCK = fs.readFileSync(path.join(__dirname, 'mock-openai.js'), 'utf8');
 const report = { base: BASE, steps: [], console: [], errors: [] };
 const step = (name, data) => { report.steps.push({ name, ...data }); console.log(`[step] ${name}: ${JSON.stringify(data).slice(0, 600)}`); };
 const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name), fullPage: !!full });
+const expect = (cond, label, detail) => { if (!cond) report.errors.push(`expect: ${label}${detail === undefined ? '' : ' ' + JSON.stringify(detail).slice(0, 300)}`); return !!cond; };
+const SUB_LABELS = ['1.1 라우팅 구조', '1.1.1 게이트 계산', '1.2 전문가 수 k의 영향', '2 Background'];
 
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -55,9 +57,13 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
   await page.waitForTimeout(800);
   const jobInfo = await page.evaluate(() => {
     const s = RPT.state; const j = s.jobs[s.currentJobId];
-    return j ? { state: j.state, summaryStatus: j.summaryStatus, summaryError: j.summaryError, error: j.error, title: j.outline && j.outline.meta && j.outline.meta.title_ko, glossaryLen: (j.glossaryStr || '').length, chunks: j.chunks.map(c => ({ id: c.id, kind: c.kind, title: c.titleEn, pages: [c.startPage, c.endPage], part: c.partIndex + '/' + c.partCount, status: c.status, len: (c.text || '').length, attempts: c.attempts, truncated: c.truncated, err: c.errorCode })), usage: j.usage } : null;
+    return j ? { state: j.state, summaryStatus: j.summaryStatus, summaryError: j.summaryError, ideasStatus: j.ideasStatus, ideasError: j.ideasError, ideaCount: j.ideas && j.ideas.ideas ? j.ideas.ideas.length : 0, error: j.error, title: j.outline && j.outline.meta && j.outline.meta.title_ko, glossaryLen: (j.glossaryStr || '').length, chunks: j.chunks.map(c => ({ id: c.id, kind: c.kind, title: c.titleEn, pages: [c.startPage, c.endPage], part: c.partIndex + '/' + c.partCount, status: c.status, len: (c.text || '').length, attempts: c.attempts, truncated: c.truncated, err: c.errorCode })), usage: j.usage } : null;
   });
   step('job', { ms: Date.now() - t0, ...jobInfo });
+  expect(jobInfo && jobInfo.state === 'done' && jobInfo.summaryStatus === 'done' && jobInfo.ideasStatus === 'done' && jobInfo.ideaCount === 5, 'job, summary and ideas done', jobInfo && { state: jobInfo.state, summary: jobInfo.summaryStatus, ideas: jobInfo.ideasStatus, ideasError: jobInfo.ideasError });
+  const ideasCalls = await page.evaluate(() => window.__mockCalls.filter(b => b.metadata && b.metadata.task === 'ideas').map(b => ({ format: b.text && b.text.format && b.text.format.name, strict: b.text && b.text.format && b.text.format.strict, stream: b.stream, effort: b.reasoning && b.reasoning.effort, verbosity: b.text && b.text.verbosity, maxOut: b.max_output_tokens, cacheKey: b.prompt_cache_key, file: (b.input[0].content[0] || {}).type })));
+  step('ideas-calls', { ideasCalls });
+  expect(ideasCalls.length === 1 && ideasCalls[0].format === 'paper_ideas' && ideasCalls[0].strict === true && ideasCalls[0].stream === true && ideasCalls[0].verbosity === 'medium' && ideasCalls[0].maxOut === 16000 && ideasCalls[0].file === 'input_file', 'one structured ideas call', ideasCalls);
   step('mock-calls', await page.evaluate(() => window.__mockCalls.map(b => ({ task: b.metadata && b.metadata.task, chunk: b.metadata && b.metadata.chunk, model: b.model, stream: !!b.stream, effort: b.reasoning && b.reasoning.effort, verbosity: b.text && b.text.verbosity, format: b.text && b.text.format && b.text.format.name, strict: b.text && b.text.format && b.text.format.strict, store: b.store, cacheKey: b.prompt_cache_key, safety: !!b.safety_identifier, maxOut: b.max_output_tokens, filePart: (b.input[0].content[0] || {}).type + ':' + ((b.input[0].content[0] || {}).file_url || (b.input[0].content[0] || {}).file_id), detail: (b.input[0].content[0] || {}).detail, parts: b.input[0].content.length, hasTemp: 'temperature' in b, obf: b.stream_options && b.stream_options.include_obfuscation }))));
   step('cache-prefix', await page.evaluate(() => {
     const calls = window.__mockCalls;
@@ -83,20 +89,30 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
       pros: document.querySelectorAll('#viz-proscons .proscons > :first-child li').length, cons: document.querySelectorAll('#viz-proscons .proscons > :last-child li').length,
       techChips: document.querySelectorAll('#viz-tech .tech-chip').length, techGroups: document.querySelectorAll('#viz-tech .tech-group').length,
       katexInSummary: document.querySelectorAll('#panel-summary .katex').length,
-      rawDollarInSummary: /\$[^$]+\$/.test(q('#panel-summary').textContent),
+      rawDollarInSummary: /\$[^$]+\$/.test(q('#panel-summary').textContent), rawStarsInSummary: /\*\*/.test(q('#panel-summary').textContent),
       tldr: txt('#summary-tldr'), titleKo: txt('#summary-title-ko'), titleEn: txt('#summary-title-en'), authors: txt('#summary-authors'), venue: txt('#summary-venue'), keywords: document.querySelectorAll('#summary-keywords li').length,
       meta: txt('#result-meta'), paperTitle: txt('#paper-title'), sourceLink: q('#source-link') && q('#source-link').getAttribute('href'),
       summaryStatusHidden: q('#summary-status').hidden,
       mdLens: ['problem', 'method', 'results', 'limits', 'tech'].map(k => (q('#md-' + k) || { textContent: '' }).textContent.length),
+      nested: ['problem', 'method', 'results', 'limits', 'tech'].map(k => document.querySelectorAll(`#md-${k} li > ul, #md-${k} li > ol`).length),
+      level1Labels: [...document.querySelectorAll('#md-problem > ul > li > strong:first-child')].map(b => b.textContent),
+      techLang: q('#md-tech').getAttribute('lang'), techChipLangs: [...document.querySelectorAll('#viz-tech .tech-chip')].map(c => c.getAttribute('lang')),
     };
   }));
+  const sd = report.steps[report.steps.length - 1];
+  expect(JSON.stringify(sd.headings) === JSON.stringify(['문제정의', '해결방법(제안 기법)', '결과 및 장점', '단점 및 한계점', '핵심기술']), 'summary headings', sd.headings);
+  expect(sd.nested[0] > 0 && sd.nested[2] > 0, 'nested lists in 문제정의 and 결과 및 장점', sd.nested);
+  expect(JSON.stringify(sd.level1Labels) === JSON.stringify(['과제 정의', '기존 방법의 한계', '연구 질문·기여']), 'level-1 bold labels', sd.level1Labels);
+  expect(!sd.rawDollarInSummary && !sd.rawStarsInSummary, 'no raw $ or ** left in the summary', { dollar: sd.rawDollarInSummary, stars: sd.rawStarsInSummary });
+  expect(sd.techLang === 'en' && sd.techChipLangs.length > 0 && sd.techChipLangs.every(l => l === 'en'), 'English 핵심기술 marked lang=en', { techLang: sd.techLang, chips: sd.techChipLangs });
   await shot(page, '04-summary.png', true);
 
   await page.click('#tab-translation');
   await page.waitForTimeout(1200);
   step('translation-dom', await page.evaluate(() => ({
     cards: [...document.querySelectorAll('#tr-main article.section-card')].map(a => ({ id: a.id, status: a.dataset.status, katex: a.querySelectorAll('.katex').length, tables: a.querySelectorAll('table').length, pre: a.querySelectorAll('pre').length, scripts: a.querySelectorAll('script').length, h2: [...a.querySelectorAll('h2,h3')].slice(0, 2).map(h => h.textContent.trim().slice(0, 60)), textLen: a.textContent.length, hasRawDollar: /\$\$/.test(a.textContent), hasAlert: /alert\("xss"\)/.test(a.innerHTML), tailLen: (a.querySelector('.md--tail') || { innerHTML: '' }).innerHTML.length, errHidden: (a.querySelector('.err, .card-error') || {}).hidden })),
-    toc: [...document.querySelectorAll('#toc-list li')].map(l => l.textContent.trim().slice(0, 40)),
+    toc: [...document.querySelectorAll('#toc-list > li > a')].map(l => l.textContent.trim().slice(0, 40)),
+    tocSub: [...document.querySelectorAll('#toc-list > li')].map(li => [...li.querySelectorAll('.toc-sub-link')].map(a => a.textContent.trim() + '@' + a.dataset.depth)),
     chips: [...document.querySelectorAll('#section-chips .status-chip')].map(c => c.dataset.status),
     progressText: document.getElementById('progress-text').textContent,
     stripState: document.getElementById('progress-strip').dataset.state,
@@ -105,14 +121,35 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
     trEmptyHidden: document.getElementById('tr-empty').hidden,
   })));
   await shot(page, '05-translation.png', true);
+  const td = report.steps[report.steps.length - 1];
+  expect(td.toc.length === td.cards.length, 'one TOC entry per card', { toc: td.toc.length, cards: td.cards.length });
+  expect(JSON.stringify((td.tocSub[1] || []).map(x => x.split('@')[0])) === JSON.stringify(SUB_LABELS), 'sub-headings of the merged section', td.tocSub[1]);
+  expect(JSON.stringify((td.tocSub[1] || []).map(x => x.split('@')[1])) === JSON.stringify(['1', '2', '1', '1']), 'sub-heading depths', td.tocSub[1]);
+  expect(td.tocSub[0].length === 0 && td.tocSub[5].length === 0, 'abstract and references have no sub-headings', { abs: td.tocSub[0], refs: td.tocSub[5] });
 
   await page.click('#side-by-side');
   await page.waitForTimeout(800);
   step('side-by-side', { sbs: await page.evaluate(() => document.getElementById('tr-layout').dataset.sbs), paneHidden: await page.evaluate(() => document.getElementById('pdf-pane').hidden), frameSrc: await page.evaluate(() => document.getElementById('pdf-frame').getAttribute('src')), frameHidden: await page.evaluate(() => document.getElementById('pdf-frame').hidden), fallbackHidden: await page.evaluate(() => document.getElementById('pdf-fallback').hidden) });
   await shot(page, '06-sbs.png');
   await page.click('#side-by-side');
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
 
-  await page.click('#tab-source');
+  await page.keyboard.press('3');
+  await page.waitForTimeout(500);
+  const ideasDom = await page.evaluate(() => ({
+    selected: (document.querySelector('#tabs [aria-selected="true"]') || {}).id, hash: location.hash, panelHidden: document.getElementById('panel-ideas').hidden,
+    cards: [...document.querySelectorAll('#panel-ideas .idea-card')].map(c => ({ title: c.querySelector('h4').textContent.trim(), chips: [...c.querySelectorAll('.idea-chip')].map(x => x.textContent.trim()), blocks: [...c.querySelectorAll('.idea-block h5')].map(h => h.textContent), links: [...c.querySelectorAll('.idea-kw a')].map(a => ({ href: a.getAttribute('href'), text: a.textContent, target: a.getAttribute('target'), rel: a.getAttribute('rel') })) })),
+    intro: (document.querySelector('#panel-ideas .ideas-intro') || {}).textContent, questions: document.querySelectorAll('#panel-ideas .ideas-questions li').length, questionMath: document.querySelectorAll('#panel-ideas .ideas-questions .katex').length, questionRawDollar: /\$/.test((document.querySelector('#panel-ideas .ideas-questions') || {}).textContent || ''), notes: (document.querySelector('#panel-ideas .ideas-notes') || {}).textContent, scripts: document.querySelectorAll('#panel-ideas script').length
+  }));
+  step('ideas-tab', { ...ideasDom, cards: ideasDom.cards.map(c => ({ ...c, links: c.links.length })) });
+  expect(ideasDom.selected === 'tab-ideas' && /\/ideas$/.test(ideasDom.hash) && !ideasDom.panelHidden, 'key 3 opens 주제 제안', { selected: ideasDom.selected, hash: ideasDom.hash });
+  expect(ideasDom.cards.length >= 4 && ideasDom.cards.every(c => c.links.length >= 3 && c.links.every(l => l.href === 'https://scholar.google.com/scholar?q=' + encodeURIComponent(l.text) && l.target === '_blank' && l.rel === 'noopener noreferrer')), 'idea cards with scholar keyword links', ideasDom.cards.map(c => c.links.length));
+  expect(ideasDom.cards.every(c => c.chips.length === 2 && /^난이도 [하중상]$/.test(c.chips[1])) && ideasDom.cards[0].blocks.join('|') === '배경과 근거|접근 방법|검증 실험|기대 효과|필요 자원', 'idea chips and blocks', ideasDom.cards[0]);
+  expect(ideasDom.questionMath >= 2 && !ideasDom.questionRawDollar, 'inline math typeset in 논문이 남긴 질문', { math: ideasDom.questionMath, raw: ideasDom.questionRawDollar });
+  expect(ideasDom.intro === '이 논문을 바탕으로 GPT가 제안한 후속 연구 주제입니다. 이미 연구된 주제일 수 있으니 키워드로 선행 연구를 확인하세요.' && ideasDom.questions === 3 && !!ideasDom.notes, 'ideas intro, questions, notes', ideasDom);
+  await shot(page, '06b-ideas.png', true);
+
+  await page.keyboard.press('4');
   await page.waitForTimeout(500);
   step('source-tab', { frameSrc: await page.evaluate(() => document.getElementById('source-frame').getAttribute('src')), label: await page.evaluate(() => document.getElementById('source-label').textContent), emptyHidden: await page.evaluate(() => document.getElementById('source-empty').hidden), hash: await page.evaluate(() => location.hash) });
 
@@ -134,13 +171,21 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
     page.waitForEvent('download', { timeout: 8000 }).catch(() => null),
     (async () => { await page.click('#btn-export'); await page.waitForTimeout(300); await page.click('#export-list button[data-export="md"]'); })()
   ]);
-  if (download) { const p = path.join(OUT, download.suggestedFilename()); await download.saveAs(p); const md = fs.readFileSync(p, 'utf8'); step('export-md', { file: download.suggestedFilename(), bytes: md.length, hasHeadings: ['문제정의', '해결방법(제안 기법)', '결과(정확한 수치) 및 장점', '단점 및 한계점', '핵심기술'].map(h => md.includes(h)), head: md.slice(0, 200) }); }
+  if (download) { const p = path.join(OUT, download.suggestedFilename()); await download.saveAs(p); const md = fs.readFileSync(p, 'utf8'); step('export-md', { file: download.suggestedFilename(), bytes: md.length, hasHeadings: ['문제정의', '해결방법(제안 기법)', '결과 및 장점', '단점 및 한계점', '핵심기술'].map(h => md.includes(h)), oldHeading: md.includes('결과(정확한 수치)'), ideas: md.includes('\n# 주제 제안\n'), ideasAfterTranslation: md.indexOf('# 주제 제안') > md.indexOf('# 전문 번역'), scholar: (md.match(/\]\(https:\/\/scholar\.google\.com\/scholar\?q=/g) || []).length, head: md.slice(0, 200) });
+    const e = report.steps[report.steps.length - 1];
+    expect(e.hasHeadings.every(Boolean) && !e.oldHeading && e.ideas && e.ideasAfterTranslation && e.scholar >= 15, 'markdown export headings and 주제 제안', e); }
   else step('export-md', { download: null });
   const [download2] = await Promise.all([
     page.waitForEvent('download', { timeout: 8000 }).catch(() => null),
     (async () => { await page.click('#btn-export'); await page.waitForTimeout(300); await page.click('#export-list button[data-export="html"]'); })()
   ]);
-  if (download2) { const p = path.join(OUT, download2.suggestedFilename()); await download2.saveAs(p); step('export-html', { file: download2.suggestedFilename(), bytes: fs.statSync(p).size }); } else step('export-html', { download: null });
+  if (download2) {
+    const p = path.join(OUT, download2.suggestedFilename()); await download2.saveAs(p);
+    const html = fs.readFileSync(p, 'utf8');
+    const h = { file: download2.suggestedFilename(), bytes: html.length, heading: html.includes('<h2>결과 및 장점</h2>'), nested: /<div class="md md--sum"><ul>\s*<li><strong>과제 정의<\/strong><ul>/.test(html), techLang: html.includes('<h2>핵심기술</h2><div class="md md--sum" lang="en">'), ideas: html.includes('<h1>주제 제안</h1>'), ideaCards: (html.match(/<article class="sec idea">/g) || []).length, ideasLast: html.indexOf('<h1>주제 제안</h1>') > html.indexOf('<h1>전문 번역</h1>') };
+    step('export-html', h);
+    expect(h.heading && h.nested && h.techLang && h.ideas && h.ideaCards === 5 && h.ideasLast, 'html export nested summary and 주제 제안', h);
+  } else { step('export-html', { download: null }); expect(false, 'html export downloaded'); }
 
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(1500);
@@ -152,9 +197,18 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
   const callsBefore = await page.evaluate(() => window.__mockCalls.length);
   await page.click('#history-list li .actions button:first-child');
   await page.waitForTimeout(1500);
-  step('history-reopen', { callsBefore, callsAfter: await page.evaluate(() => window.__mockCalls.length), resultVisible: await page.evaluate(() => !document.getElementById('view-result').hidden), hash: await page.evaluate(() => location.hash), metricRows: await page.evaluate(() => document.querySelectorAll('#viz-metrics tbody tr').length), radarCanvas: await page.evaluate(() => !!document.querySelector('#viz-radar canvas')), progressText: await page.evaluate(() => document.getElementById('progress-text').textContent) });
+  const callsAfter = await page.evaluate(() => window.__mockCalls.length);
+  expect(callsAfter === callsBefore, 'reopen from history makes no API call', { callsBefore, callsAfter });
+  step('history-reopen', { callsBefore, callsAfter, resultVisible: await page.evaluate(() => !document.getElementById('view-result').hidden), hash: await page.evaluate(() => location.hash), metricRows: await page.evaluate(() => document.querySelectorAll('#viz-metrics tbody tr').length), radarCanvas: await page.evaluate(() => !!document.querySelector('#viz-radar canvas')), progressText: await page.evaluate(() => document.getElementById('progress-text').textContent) });
   await page.click('#tab-translation'); await page.waitForTimeout(800);
-  step('history-reopen-translation', { cards: await page.evaluate(() => [...document.querySelectorAll('#tr-main article.section-card')].map(a => a.dataset.status + ':' + a.querySelectorAll('.katex').length)), toc: await page.evaluate(() => document.querySelectorAll('#toc-list li').length) });
+  step('history-reopen-translation', { cards: await page.evaluate(() => [...document.querySelectorAll('#tr-main article.section-card')].map(a => a.dataset.status + ':' + a.querySelectorAll('.katex').length)), toc: await page.evaluate(() => document.querySelectorAll('#toc-list > li').length), tocSub: await page.evaluate(() => document.querySelectorAll('#toc-list .toc-sub-link').length) });
+  const hr = report.steps[report.steps.length - 1];
+  expect(hr.tocSub >= 12, 'saved analysis gets TOC sub-headings without API calls', hr.tocSub);
+  await page.click('#tab-ideas'); await page.waitForTimeout(400);
+  const reIdeas = await page.evaluate(() => ({ cards: document.querySelectorAll('#panel-ideas .idea-card').length, calls: window.__mockCalls.length }));
+  step('history-reopen-ideas', reIdeas);
+  expect(reIdeas.cards === 5 && reIdeas.calls === callsBefore, 'saved ideas shown without API calls', reIdeas);
+  await page.click('#tab-translation'); await page.waitForTimeout(300);
   await shot(page, '10-reopened-translation.png', true);
 
   await page.click('#tab-summary'); await page.waitForTimeout(300);
@@ -165,6 +219,11 @@ const shot = (page, name, full) => page.screenshot({ path: path.join(OUT, name),
   await page.click('#tab-translation'); await page.waitForTimeout(600);
   step('mobile-translation', { scrollWidth: await page.evaluate(() => document.documentElement.scrollWidth) });
   await shot(page, '12-mobile-translation.png', true);
+  await page.click('#tab-ideas'); await page.waitForTimeout(500);
+  const mi = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth, cards: document.querySelectorAll('#panel-ideas .idea-card').length, overflowers: [...document.querySelectorAll('#panel-ideas *')].filter(e => e.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && e.offsetParent !== null).slice(0, 5).map(e => e.tagName.toLowerCase() + '.' + e.className) }));
+  step('mobile-ideas', mi);
+  expect(mi.scrollWidth <= mi.clientWidth && mi.cards === 5 && mi.overflowers.length === 0, 'ideas tab fits 390px', mi);
+  await shot(page, '12b-mobile-ideas.png', true);
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.evaluate(() => { location.hash = '#home'; });

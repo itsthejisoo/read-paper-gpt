@@ -50,8 +50,6 @@ const KNOWN_PARAMS = ['client_id', 'agent_name_hint', 'ext_agent_host_id', 'resp
 const report = { base: BASE, fileUrl: FILE_URL, redirectUri: REDIRECT_URI, scenarios: [] };
 let browser;
 
-// 인가 요청은 최상위 내비게이션이므로 Node 측 라우트가 파라미터를 기록하고 콜백으로 302 시킨다.
-// 교환 단계의 검증 재료(challenge·code·nonce)는 노출 함수로 페이지 측 mock에 전달한다 (내비게이션을 넘어 유지됨).
 async function installAuth(page, opts) {
   const auth = { requests: [], latest: null, codes: 0, deny: !!opts.deny };
   await page.exposeFunction('__mockAuth', () => auth.latest);
@@ -104,11 +102,10 @@ async function scenario(name, cfg, fn, opts = {}) {
   await ctx.close();
 }
 
-// OAuth 중에는 문서가 여러 번 바뀌므로 evaluate 실패를 삼키며 조건을 폴링한다
 async function poll(page, fn, timeout = 20000, label = 'condition', arg) {
   const t0 = Date.now();
   for (;;) {
-    try { const v = await page.evaluate(fn, arg); if (v) return v; } catch { /* 내비게이션 중 */ }
+    try { const v = await page.evaluate(fn, arg); if (v) return v; } catch {}
     if (Date.now() - t0 > timeout) throw new Error(`timeout waiting for ${label}`);
     await new Promise(r => setTimeout(r, 150));
   }
@@ -146,7 +143,7 @@ async function openGate(page, url = BASE) {
   await page.waitForTimeout(300);
 }
 async function signIn(page, opts) { await openGate(page); return clickChatGPT(page, opts); }
-// 이미 열린 게이트에서 API 키로 로그인한다 (다른 방법으로 로그인 / API 키로 전환 경로)
+// Signs in with an API key from the already open gate.
 async function keyInGate(page) {
   await page.fill('#api-key', 'sk-test-valid-key-123');
   await page.click('#btn-login');
@@ -157,14 +154,12 @@ async function loginKey(page, url = BASE) {
   await openGate(page, url);
   await keyInGate(page);
 }
-// knob을 바꾸면 현재 문서와 이후 내비게이션(sessionStorage 덮어쓰기) 모두에 적용된다
 const setCfg = (page, patch) => page.evaluate((p) => {
   Object.assign(window.__mockCfg, p);
   let over = {};
   try { over = JSON.parse(sessionStorage.getItem('__mock.cfg')) || {}; } catch { over = {}; }
   sessionStorage.setItem('__mock.cfg', JSON.stringify(Object.assign(over, p)));
 }, patch);
-// 저장된 토큰 레코드를 만료 상태로 바꾼다 (값은 보고서에 남기지 않는다)
 const expireTokens = (page) => page.evaluate(() => {
   const k = 'rpt.chatgpt.tokens.v1';
   let t = null;
@@ -209,14 +204,13 @@ const models = (page) => page.evaluate(() => ({
 }));
 const job = (page) => page.evaluate(() => {
   const s = RPT.state; const j = s.currentJobId && s.jobs[s.currentJobId];
-  return j ? { id: j.id, state: j.state, model: j.model, summaryStatus: j.summaryStatus, summaryError: j.summaryError, error: j.error, source: { type: j.source.type, fileId: j.source.fileId || null, hasFileData: !!j.source.fileData, pdfUrl: j.source.pdfUrl || null }, chunks: j.chunks.map(c => ({ id: c.id, kind: c.kind, pages: [c.startPage, c.endPage], status: c.status, attempts: c.attempts, truncated: c.truncated, err: c.errorCode, msg: c.error, len: (c.text || '').length })), usage: j.usage } : null;
+  return j ? { id: j.id, state: j.state, model: j.model, summaryStatus: j.summaryStatus, summaryError: j.summaryError, ideasStatus: j.ideasStatus, ideasError: j.ideasError, ideaCount: j.ideas && Array.isArray(j.ideas.ideas) ? j.ideas.ideas.length : 0, error: j.error, source: { type: j.source.type, fileId: j.source.fileId || null, hasFileData: !!j.source.fileData, pdfUrl: j.source.pdfUrl || null }, chunks: j.chunks.map(c => ({ id: c.id, kind: c.kind, pages: [c.startPage, c.endPage], status: c.status, attempts: c.attempts, truncated: c.truncated, err: c.errorCode, msg: c.error, len: (c.text || '').length })), usage: j.usage } : null;
 });
 async function waitEnd(page, timeout = 90000) {
   await page.waitForFunction(() => { const s = RPT.state; const j = s.currentJobId && s.jobs[s.currentJobId]; return j && ['done', 'partial', 'failed', 'cancelled'].includes(j.state); }, null, { timeout });
   await page.waitForTimeout(600);
 }
 async function start(page, url) { await page.fill('#url-input', url); await page.waitForTimeout(150); await page.click('#btn-start'); }
-// 결과 화면(#result/…)에서는 #url-input이 숨겨져 있으므로 새 분석 전에 홈으로 돌아간다
 async function goHome(page) {
   await page.evaluate(() => { location.hash = '#home'; });
   await page.waitForFunction(() => !document.getElementById('view-home').hidden, null, { timeout: 5000 });
@@ -257,7 +251,7 @@ const settingsInfo = (page) => page.evaluate(() => {
   const fs = q('set-account');
   return { open: !!q('settings').open, fieldset: !!fs, legend: fs && fs.querySelector('legend') ? fs.querySelector('legend').textContent.trim() : null, accountText: q('account-text') ? q('account-text').textContent.trim().replace(/\s+/g, ' ') : null, usageLink: q('account-usage-link') ? { href: q('account-usage-link').getAttribute('href'), visible: vis(q('account-usage-link')), text: q('account-usage-link').textContent.trim() } : null, switchBtn: q('btn-switch-auth') ? q('btn-switch-auth').textContent.trim() : null, modelHelp: q('set-model-field') ? q('set-model-field').textContent.replace(/\s+/g, ' ') : '' };
 });
-// 가로 넘침 검사: 문서 폭과 대상 요소가 뷰포트 안에 있어야 한다
+// Horizontal overflow check for the page and an element.
 const fit = (page, sel) => page.evaluate((sel) => {
   const el = sel ? document.querySelector(sel) : null;
   const r = el ? el.getBoundingClientRect() : null;
@@ -265,6 +259,27 @@ const fit = (page, sel) => page.evaluate((sel) => {
 }, sel);
 const fits = (f) => f.scrollWidth <= f.innerWidth && (!f.el || (f.el.left >= 0 && f.el.right <= f.innerWidth && f.el.width > 0));
 const confirmInfo = (page) => page.evaluate(() => ({ open: !!document.getElementById('confirm').open, title: document.getElementById('confirm-title').textContent.trim(), body: document.getElementById('confirm-body').textContent.trim(), ok: document.getElementById('confirm-ok').textContent.trim() }));
+const ideasPanel = (page) => page.evaluate(() => {
+  const box = document.getElementById('ideas-body');
+  const st = box.querySelector('.ideas-state');
+  return {
+    hidden: document.getElementById('panel-ideas').hidden, tab: (document.querySelector('#tabs [aria-selected="true"]') || {}).id, hash: location.hash,
+    kind: st ? (st.classList.contains('ideas-state--failed') ? 'failed' : 'notice') : (box.querySelector('.ideas-loading') ? 'loading' : (box.querySelector('.idea-card') ? 'ideas' : 'empty')),
+    notice: st ? st.querySelector('p').textContent.trim() : null, buttons: [...box.querySelectorAll('button')].map(b => b.textContent.trim() + (b.disabled ? ':disabled' : '')), cards: box.querySelectorAll('.idea-card').length
+  };
+});
+const tocInfo = (page) => page.evaluate(() => [...document.querySelectorAll('#toc-list > li')].map(li => {
+  const a = li.querySelector(':scope > a.toc-link');
+  return {
+    sec: li.dataset.sec, current: a.getAttribute('aria-current'), contains: a.classList.contains('contains-current'),
+    subs: [...li.querySelectorAll(':scope > ol.toc-sub > li > a.toc-sub-link')].map(x => {
+      const h = document.getElementById(x.dataset.target);
+      return { label: x.textContent.trim(), depth: x.dataset.depth, href: x.getAttribute('href'), current: x.getAttribute('aria-current'), target: !!h && h.closest('.section-card') === document.getElementById('sec-' + li.dataset.sec) && h.getAttribute('tabindex') === '-1' && ('#' + h.id) === x.getAttribute('href') };
+    })
+  };
+}));
+const subLabels = (toc) => Object.fromEntries(toc.map(t => [t.sec, t.subs.map(x => x.label)]));
+const sameLabels = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const planBodyChecks = (list) => {
   const plan = list.filter(c => c.auth === 'plan');
   return {
@@ -336,6 +351,10 @@ const planBodyChecks = (list) => {
     expect(c.length > 0 && c.every(x => x.viaProxy === true), 'every plan call relayed through /__rpt/openai', c.map(x => x.viaProxy));
     expect(pb.count === c.length && pb.count > 0 && pb.allStoreFalse && pb.allStream && pb.noMaxOut && pb.noMeta && pb.noSafety && pb.instructions && pb.inputArray && pb.noSystem && pb.fileUrl && pb.noFileId, 'plan body contract', pb);
     expect(JSON.stringify(pb.models) === JSON.stringify(['gpt-6.1-sol']), 'plan model slug sent', pb.models);
+    const ic = c.filter(x => x.task === 'ideas');
+    step('ideas-call', { ideasStatus: j.ideasStatus, ideaCount: j.ideaCount, calls: ic });
+    expect(j.ideasStatus === 'done' && j.ideaCount === 5, 'ideas generated in plan mode', { ideasStatus: j.ideasStatus, ideasError: j.ideasError });
+    expect(ic.length === 1 && ic[0].viaProxy && ic[0].store === false && ic[0].stream === true && !ic[0].hasMaxOut && !ic[0].hasMeta && !ic[0].hasSafety && ic[0].format === 'paper_ideas' && !!ic[0].fileUrl, 'ideas call relayed with plan rules', ic);
     await page.click('#tab-summary');
     await page.waitForTimeout(800);
     const meta = await resultMeta(page);
@@ -438,7 +457,6 @@ const planBodyChecks = (list) => {
     expect(sto.hasTokens && sto.expiresInMin !== null && sto.expiresInMin >= 55, 'rotated token stored with new expiry', { expiresInMin: sto.expiresInMin });
     expect(!(await gate(page)).open, 'gate stays closed');
 
-    // 구조 파악 호출이 진행되는 동안 토큰을 만료시키면 이어지는 요약+섹션 번역 호출이 동시에 갱신을 요구한다
     await goHome(page);
     const callsBefore = c.length;
     await start(page, ARXIV);
@@ -562,7 +580,6 @@ const planBodyChecks = (list) => {
     await shot('upload');
   });
 
-  // 플랜 모드 업로드 작업이 한도에 걸린 뒤 API 키로 전환해 이어서 번역하면 파일은 Files API로 다시 올리고 키 모드 본문으로 보낸다
   await scenario('chatgpt-switch-key-upload', { planLimitOnce: true, rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -599,7 +616,6 @@ const planBodyChecks = (list) => {
     await shot('done');
   });
 
-  // 진행 중인 플랜 작업에서 API 키로 바꾸면 작업을 중단하고, 재시도는 키 모드 본문으로 나간다
   await scenario('chatgpt-switch-key-midrun', { slowTranslate: true, rateLimitOnce: false }, async ({ page, step, expect }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -630,7 +646,6 @@ const planBodyChecks = (list) => {
     expect(!meta.chip && /예상 비용/.test(meta.text || ''), 'header switched to cost estimate', meta);
   });
 
-  // 갱신 요청이 진행되는 동안 중단해도 회전된 토큰은 저장되어야 한다
   await scenario('chatgpt-cancel-during-refresh', { rateLimitOnce: false }, async ({ page, step, expect }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -660,7 +675,6 @@ const planBodyChecks = (list) => {
     expect(tc.filter(t => t.grant === 'refresh_token').length === 1 && tc.every(t => t.ok), 'no further refresh and no reuse error', tc);
   });
 
-  // 플랜 전용 거부 코드가 아닌 400은 파라미터를 제거하지 않고 그 호출만 실패시킨다
   await scenario('chatgpt-strip-guard', { planContextOnce: true, rateLimitOnce: false }, async ({ page, step, expect }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -687,7 +701,6 @@ const planBodyChecks = (list) => {
     expect(j2.state === 'done' && c2.length === 1 && c2[0].inputArray, 'manual retry resends the chunk with input', { state: j2.state, calls: c2.length });
   });
 
-  // 제거할 수 없는 경로(input)를 거부하면 세션 목록에 남기지 않고 안내 문구로 실패한다
   await scenario('chatgpt-strip-unstrippable', { planUnsupportedParamOnce: 'input', rateLimitOnce: false }, async ({ page, step, expect }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -709,7 +722,6 @@ const planBodyChecks = (list) => {
     expect(j2.state === 'done' && c2.every(x => x.inputArray), 'next job sends input normally', { state: j2.state, allInput: c2.every(x => x.inputArray) });
   });
 
-  // 거부 메시지에 reasoning/effort 같은 단어가 있어도 플랜 전용 코드면 경로를 세션에 남겨, 이후 호출은 처음부터 뺀다
   await scenario('chatgpt-strip-reasoning', { planUnsupportedParamAlways: 'reasoning.effort', rateLimitOnce: false }, async ({ page, step, expect }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -738,7 +750,6 @@ const planBodyChecks = (list) => {
     expect(j2.state === 'done' && c2.length > 0 && ev2.length === 1 && c2.every(x => !x.hasReasoning), 'next job sends no reasoning and is never rejected', { state: j2.state, events: ev2.length, anyReasoning: c2.some(x => x.hasReasoning) });
   });
 
-  // 첫 등록의 코드 교환이 실패하면 발급된 client_id를 남겨 두고, 다음 시도는 같은 id로(앱을 다시 등록하지 않고) 로그인한다
   await scenario('chatgpt-exchange-retry', { exchangeFailOnce: true }, async ({ page, step, expect, shot, auth }) => {
     await openGate(page);
     const r1 = await clickChatGPT(page, { expectWelcome: false });
@@ -761,11 +772,9 @@ const planBodyChecks = (list) => {
     expect(a2.agentNameHint === null && a2.loginHint === null && a2.prompt === null, 'retry omits agent_name_hint/login_hint/prompt', { agentNameHint: a2.agentNameHint, loginHint: a2.loginHint, prompt: a2.prompt });
     expect(r2.connected === true && !!r2.welcome, 'connected with welcome on the retry', { connected: r2.connected, welcome: !!r2.welcome, error: r2.error });
     expect(sto2.hasTokens && sto2.regClientId === 'oaiapp_test' && sto2.regEmail === EMAIL && sto2.regSubject === 'user_test', 'registration completed with identity', sto2);
-    // __mockTokenCalls는 문서마다 새로 만들어지므로 두 번째 시도의 문서에는 성공한 교환만 남는다
     expect(tc2.length === 1 && tc2[0].grant === 'authorization_code' && tc2[0].ok, 'second exchange succeeded', tc2);
   });
 
-  // API 키로 전환하면 ChatGPT 토큰을 폐기하고, 키 모드 로그아웃 뒤에는 남은 세션이 없어 게이트를 닫을 수 없다
   await scenario('chatgpt-switch-key-revoke', {}, async ({ page, step, expect, shot }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -895,7 +904,6 @@ const planBodyChecks = (list) => {
     await shot('gate');
   });
 
-  // 모델 목록 호출 실패: 이유가 화면에 보이고, 다시 불러오기로 복구되며, 표준 data[] 형태도 받아들인다
   await scenario('chatgpt-models-fail', { planModelsFail: 'forbidden', planModelsFailOnce: true, rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in despite model-list failure', r);
@@ -950,7 +958,6 @@ const planBodyChecks = (list) => {
     expect(hidden.options.length === 0 && /visibility hidden/.test(hidden.note || ''), 'all-hidden catalog explains itself', hidden);
   });
 
-  // 중계 기능이 없는 서버(python -m http.server)에서는 OAuth로 넘어가지 않고 serve.py 안내만 보여 준다
   await scenario('chatgpt-no-proxy', { proxyMissing: true }, async ({ page, step, expect, shot, auth }) => {
     await openGate(page);
     await page.click('#btn-chatgpt');
@@ -967,7 +974,6 @@ const planBodyChecks = (list) => {
     await shot('no-proxy');
   });
 
-  // localhost에서 127.0.0.1로 넘어오는 ?chatgpt=start 경로도 OAuth 전에 중계 여부를 확인한다
   await scenario('chatgpt-no-proxy-localhost', { proxyMissing: true }, async ({ page, step, expect, auth }) => {
     const localUrl = BASE.replace('127.0.0.1', 'localhost');
     if (localUrl === BASE) { step('skipped', { reason: 'BASE is not 127.0.0.1' }); return; }
@@ -985,8 +991,6 @@ const planBodyChecks = (list) => {
     expect(g.open && g.btnDisabled === false && g.btnText === COPY.button && st && st.proxy === false, 'button re-enabled, proxy false', { btnDisabled: g.btnDisabled, btnText: g.btnText, proxy: st && st.proxy });
   });
 
-  // 로그인 뒤 중계 없는 서버로 다시 띄우면 작업은 serve.py 안내로 실패하고, 토큰 갱신이나 로그아웃은 일어나지 않는다
-  // (python -m http.server는 POST에 404가 아닌 501 HTML을 주므로 재시도 없이 한 번에 멈춰야 한다)
   await scenario('chatgpt-proxy-lost', { rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -1012,7 +1016,6 @@ const planBodyChecks = (list) => {
     await shot('proxy-lost');
   });
 
-  // serve.py가 api.openai.com에 닿지 못하면(502 proxy_upstream) 재시도 뒤 네트워크 안내로 실패한다. 플랜 확인 불가 문구가 아니다
   await scenario('chatgpt-upstream-down', { rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
     const r = await signIn(page);
     expect(r.connected, 'signed in', r);
@@ -1063,7 +1066,6 @@ const planBodyChecks = (list) => {
   });
 
   await scenario('file-mode', {}, async ({ page, step, expect, shot }) => {
-    // 테스트 디렉터리를 프로젝트 밖으로 복사해 실행하면 ../index.html이 없으므로 FILE_URL 환경 변수로 지정한다
     if (FILE_URL.startsWith('file:') && !fs.existsSync(fileURLToPath(FILE_URL))) { step('skipped', { reason: 'index.html not found; set FILE_URL', fileUrl: FILE_URL }); return; }
     await openGate(page, FILE_URL);
     const g = await gate(page);
@@ -1115,7 +1117,6 @@ const planBodyChecks = (list) => {
     await shot('done');
   });
 
-  // 1.0.0에서 저장된 작업(planMode 없음)은 모드 전환으로 보지 않는다: 모델과 file_id를 그대로 두고 재시도한다
   await scenario('legacy-job-retry', { rateLimitOnce: false }, async ({ page, step, expect }) => {
     await loginKey(page);
     await start(page, ARXIV);
@@ -1182,6 +1183,235 @@ const planBodyChecks = (list) => {
     expect(j4.state === 'done' && files.uploads === 0 && files.deletes === 1 && c4.length > 0 && c4.every(x => x.auth === 'key' && x.hasFileId && !x.hasFileData), 'retry resends the stored file_id without re-uploading', { state: j4.state, files, calls: c4.length });
   });
 
+  await scenario('ideas-retry', { ideasFailOnce: true, rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
+    await loginKey(page);
+    await start(page, ARXIV);
+    await waitEnd(page);
+    const j1 = await job(page);
+    const u1 = await ui(page);
+    await page.keyboard.press('3');
+    await page.waitForTimeout(400);
+    const p1 = await ideasPanel(page);
+    step('after-failure', { state: j1.state, summaryStatus: j1.summaryStatus, ideasStatus: j1.ideasStatus, ideasError: j1.ideasError, chunks: j1.chunks.map(x => x.id + ':' + x.status), ui: u1, panel: p1 });
+    expect(j1.state === 'partial' && j1.summaryStatus === 'done' && j1.ideasStatus === 'failed' && j1.chunks.every(x => x.status !== 'failed'), 'ideas failure alone makes the job partial', { state: j1.state, ideasStatus: j1.ideasStatus });
+    expect(!u1.retryAllHidden, 'retry-all offered for the failed ideas', u1.retryAllHidden);
+    expect(p1.tab === 'tab-ideas' && /\/ideas$/.test(p1.hash) && !p1.hidden, 'key 3 opens the ideas tab', p1);
+    expect(p1.kind === 'failed' && p1.notice === '주제 제안을 만들지 못했습니다. Mock ideas failure' && JSON.stringify(p1.buttons) === JSON.stringify(['다시 만들기']) && p1.cards === 0, 'failed notice with 다시 만들기', p1);
+    await shot('failed');
+    const n1 = (await calls(page)).length;
+    await page.click('#btn-retry-all');
+    await waitEnd(page);
+    const j2 = await job(page);
+    const c2 = (await calls(page)).slice(n1);
+    const p2 = await ideasPanel(page);
+    step('after-retry-all', { state: j2.state, ideasStatus: j2.ideasStatus, ideaCount: j2.ideaCount, calls: c2.map(x => x.task), panel: p2, ui: await ui(page) });
+    expect(j2.state === 'done' && j2.ideasStatus === 'done' && j2.ideaCount === 5, 'retry-all regenerates the ideas', { state: j2.state, ideasStatus: j2.ideasStatus, ideasError: j2.ideasError });
+    expect(c2.length === 1 && c2[0].task === 'ideas', 'retry-all sends only the ideas call', c2.map(x => x.task));
+    expect(p2.kind === 'ideas' && p2.cards === 5 && JSON.stringify(p2.buttons) === JSON.stringify(['다시 만들기']), 'ideas rendered with 다시 만들기', p2);
+    expect((await ui(page)).retryAllHidden, 'retry-all hidden once everything is done');
+    await page.click('#panel-ideas button[data-ideas-action]');
+    await poll(page, () => { const s = RPT.state; const j = s.jobs[s.currentJobId]; return window.__mockCalls.length > 0 && j.state === 'done' && j.ideasStatus === 'done' && !s.run; }, 20000, 'ideas regenerated');
+    await page.waitForTimeout(300);
+    const c3 = (await calls(page)).slice(n1 + c2.length);
+    const p3 = await ideasPanel(page);
+    step('after-regenerate', { calls: c3.map(x => x.task), panel: p3 });
+    expect(c3.length === 1 && c3[0].task === 'ideas' && p3.cards === 5, '다시 만들기 sends one ideas call', { calls: c3.map(x => x.task), cards: p3.cards });
+    await shot('done');
+  });
+
+  await scenario('legacy-ideas', { rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
+    await loginKey(page);
+    await start(page, ARXIV);
+    await waitEnd(page);
+    const j1 = await job(page);
+    const seeded = await page.evaluate(async (id) => {
+      const rec = await RPT.store.loadJob(id);
+      delete rec.ideasStatus; delete rec.ideas; delete rec.ideasError;
+      await RPT.store.saveJob(rec);
+      const back = await RPT.store.loadJob(id);
+      return { hasIdeasFields: ['ideasStatus', 'ideas', 'ideasError'].some(k => k in back), state: back.state };
+    }, j1.id);
+    step('seeded', seeded);
+    expect(!seeded.hasIdeasFields && seeded.state === 'done', 'v1.2.0-shaped record stored', seeded);
+    await page.evaluate((id) => { location.hash = `#result/${id}/ideas`; }, j1.id);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => !document.getElementById('view-result').hidden && !document.getElementById('panel-ideas').hidden, null, { timeout: 10000 });
+    await page.waitForTimeout(500);
+    const p1 = await ideasPanel(page);
+    const j2 = await job(page);
+    step('reopened', { panel: p1, state: j2.state, ideasStatus: j2.ideasStatus === undefined ? 'undefined' : j2.ideasStatus, calls: (await calls(page)).length, progress: (await ui(page)).progress });
+    expect(p1.tab === 'tab-ideas' && p1.kind === 'notice' && p1.notice === '이 분석에는 주제 제안이 없습니다.' && JSON.stringify(p1.buttons) === JSON.stringify(['주제 제안 만들기']), 'legacy notice with 주제 제안 만들기', p1);
+    expect(j2.state === 'done' && j2.ideasStatus === undefined && (await calls(page)).length === 0, 'reopening makes no API call and keeps the record as is', { state: j2.state, ideasStatus: j2.ideasStatus });
+    await shot('legacy');
+    await page.click('#panel-ideas button[data-ideas-action]');
+    await poll(page, () => { const s = RPT.state; const j = s.jobs[s.currentJobId]; return j.ideasStatus === 'done' && j.state === 'done' && !s.run; }, 20000, 'ideas generated');
+    await page.waitForTimeout(400);
+    const c = await calls(page);
+    const p2 = await ideasPanel(page);
+    const stored = await page.evaluate(async (id) => { const r = await RPT.store.loadJob(id); return { ideasStatus: r.ideasStatus, count: r.ideas && r.ideas.ideas ? r.ideas.ideas.length : 0, state: r.state }; }, j1.id);
+    step('generated', { calls: c.map(x => x.task + ':' + x.format), panel: p2, stored, progress: (await ui(page)).progress });
+    expect(c.length === 1 && c[0].task === 'ideas' && c[0].format === 'paper_ideas', 'only the ideas call is sent', c.map(x => x.task));
+    expect(p2.kind === 'ideas' && p2.cards === 5, 'ideas rendered for the legacy record', p2);
+    expect(stored.ideasStatus === 'done' && stored.count === 5 && stored.state === 'done', 'ideas persisted with the record', stored);
+    await page.keyboard.press('4');
+    await page.waitForTimeout(300);
+    const t4 = await page.evaluate(() => ({ tab: document.querySelector('#tabs [aria-selected="true"]').id, hash: location.hash }));
+    step('key-4', t4);
+    expect(t4.tab === 'tab-source' && /\/source$/.test(t4.hash), 'key 4 opens the source tab', t4);
+  });
+
+  await scenario('toc-subheadings', { rateLimitOnce: false }, async ({ page, step, expect, shot }) => {
+    await loginKey(page);
+    await start(page, ARXIV);
+    await waitEnd(page);
+    await page.click('#tab-translation');
+    await page.waitForTimeout(800);
+    const j = await job(page);
+    const toc = await tocInfo(page);
+    const byId = Object.fromEntries(j.chunks.map(c => [c.id, c]));
+    const labels = subLabels(toc);
+    step('toc', { chunks: j.chunks.map(c => c.id + ':' + c.kind + ':' + c.status), labels, depths: toc.map(t => t.subs.map(x => x.depth).join('')) });
+    const body = toc.filter(t => byId[t.sec] && (byId[t.sec].kind === 'body' || byId[t.sec].kind === 'appendix'));
+    expect(toc.length === j.chunks.length, 'one TOC entry per section', toc.length);
+    expect(body.length >= 4 && body.every(t => t.subs.length >= 3), 'every body section lists its sub-headings', labels);
+    expect(toc.filter(t => byId[t.sec] && (byId[t.sec].kind === 'abstract' || byId[t.sec].kind === 'references')).every(t => t.subs.length === 0), 'abstract and references have no sub-headings', labels);
+    const merged = toc.find(t => t.subs.some(x => x.label === '2 Background'));
+    expect(!!merged && sameLabels(merged.subs.map(x => x.label), ['1.1 라우팅 구조', '1.1.1 게이트 계산', '1.2 전문가 수 k의 영향', '2 Background']) && merged.subs.map(x => x.depth).join('') === '1211', 'merged section labels and depths', merged && merged.subs);
+    expect(toc.every(t => t.subs.every(x => x.target && /^#sec-c\d+-h\d+$/.test(x.href))), 'every sub-link points at its own heading (tabindex -1)', toc.map(t => t.subs.filter(x => !x.target).length));
+    expect(toc.every(t => t.subs.every(x => !/kk|\$/.test(x.label))), 'math in labels is not duplicated', labels);
+    const split = toc.filter(t => byId[t.sec] && /^3\./.test((t.subs[0] || {}).label || ''));
+    expect(split.length === 2 && sameLabels(split[0].subs.map(x => x.label), ['3.1 라우팅 구조', '3.1.1 게이트 계산', '3.2 전문가 수 k의 영향']) && sameLabels(split[1].subs.map(x => x.label), ['3.3 라우팅 구조', '3.3.1 게이트 계산', '3.4 전문가 수 k의 영향']), 'split section continues the numbering', split.map(t => t.subs.map(x => x.label)));
+    const layout = await page.evaluate(() => {
+      const li = [...document.querySelectorAll('#toc-list > li')].find(x => x.querySelector('.toc-sub-link'));
+      const sec = li.querySelector(':scope > a');
+      const a = sec.getBoundingClientRect();
+      const subs = [...li.querySelectorAll('.toc-sub-link')];
+      const r0 = subs[0].getBoundingClientRect();
+      const d2 = subs.find(x => x.dataset.depth === '2');
+      const lbl = (x) => x.querySelector('.lbl').getBoundingClientRect().left;
+      return { indent: Math.round(lbl(subs[0]) - lbl(sec)), below: r0.top >= a.bottom - 1, deeper: d2 ? Math.round(lbl(d2) - lbl(subs[0])) : null, secFont: parseFloat(getComputedStyle(li.querySelector(':scope > a')).fontSize), subFont: parseFloat(getComputedStyle(subs[0]).fontSize), dots: li.querySelectorAll('.toc-sub .dot').length, sticky: getComputedStyle(document.getElementById('toc')).position };
+    });
+    step('sidebar-layout', layout);
+    expect(layout.indent > 4 && layout.below && layout.deeper > 4 && layout.subFont < layout.secFont && layout.dots === 0 && layout.sticky === 'sticky', 'sidebar nests and indents sub-headings', layout);
+    await shot('toc-1440');
+
+    const route = await page.evaluate(() => location.hash);
+    const target = split[0].subs[2];
+    await page.locator(`#toc-list a.toc-sub-link[href="${target.href}"]`).click();
+    await page.waitForTimeout(1600);
+    const landed = await page.evaluate((href) => { const h = document.querySelector(href); const r = h.getBoundingClientRect(); return { top: Math.round(r.top), focused: document.activeElement === h, hash: location.hash, label: h.textContent.trim() }; }, target.href);
+    const t1 = await tocInfo(page);
+    const cur1 = t1.flatMap(t => t.subs.filter(x => x.current === 'true').map(x => x.label));
+    const sec1 = t1.find(t => t.sec === split[0].sec);
+    step('click-sub', { landed, current: cur1, section: { current: sec1.current, contains: sec1.contains } });
+    expect(landed.top >= 56 && landed.top < 140, 'heading lands just below the top bar', landed.top);
+    expect(landed.focused && landed.hash === route, 'heading focused, route unchanged', landed);
+    expect(sameLabels(cur1, ['3.2 전문가 수 k의 영향']) && sec1.current === 'false' && sec1.contains, 'clicked sub-link becomes current, its section is marked as containing it', { cur1, sec: sec1 });
+
+    const s2 = split[1];
+    await page.evaluate((href) => { const h = document.querySelector(href); window.scrollTo({ top: h.getBoundingClientRect().top + window.scrollY - 70, behavior: 'instant' }); }, s2.subs[0].href);
+    await page.waitForTimeout(400);
+    const t2 = await tocInfo(page);
+    const cur2 = t2.flatMap(t => t.subs.filter(x => x.current === 'true').map(x => x.label));
+    const sec2 = t2.find(t => t.sec === s2.sec);
+    step('scroll-sub', { current: cur2, section: { current: sec2.current, contains: sec2.contains } });
+    expect(sameLabels(cur2, ['3.3 라우팅 구조']) && sec2.contains && sec2.current === 'false', 'aria-current follows the scroll', { cur2, sec: sec2 });
+    await page.evaluate((id) => { const c = document.getElementById('sec-' + id); window.scrollTo({ top: c.getBoundingClientRect().top + window.scrollY - 70, behavior: 'instant' }); }, s2.sec);
+    await page.waitForTimeout(400);
+    const t3 = await tocInfo(page);
+    const sec3 = t3.find(t => t.sec === s2.sec);
+    const cur3 = t3.flatMap(t => [t.current === 'true' ? t.sec : null, ...t.subs.filter(x => x.current === 'true').map(x => x.label)]).filter(Boolean);
+    step('scroll-section-top', { current: cur3, contains: sec3.contains });
+    expect(sameLabels(cur3, [s2.sec]) && !sec3.contains, 'before the first sub-heading the section link is current', cur3);
+
+    await page.focus(`#toc-list > li[data-sec="${merged.sec}"] > a.toc-link`);
+    await page.keyboard.press('Tab');
+    const tab1 = await page.evaluate(() => document.activeElement.textContent.trim());
+    for (let i = 0; i < merged.subs.length; i++) await page.keyboard.press('Tab');
+    const tab2 = await page.evaluate(() => ({ cls: document.activeElement.className, sec: document.activeElement.dataset.sec }));
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1600);
+    const entered = await page.evaluate(() => ({ label: document.activeElement.textContent.trim(), tag: document.activeElement.tagName, top: Math.round(document.activeElement.getBoundingClientRect().top) }));
+    step('keyboard', { tab1, tab2, entered });
+    const nextSec = toc[toc.findIndex(t => t.sec === merged.sec) + 1].sec;
+    expect(tab1 === '1.1 라우팅 구조' && tab2.sec === nextSec && /toc-link/.test(tab2.cls), 'Tab order: section, its sub-links, next section', { tab1, tab2 });
+    expect(entered.label === '2 Background' && entered.tag === 'H2' && entered.top >= 56 && entered.top < 140, 'Enter on a sub-link moves focus to its heading', entered);
+    await page.evaluate(() => document.activeElement.blur());
+    await page.keyboard.press('t');
+    const tFocus = await page.evaluate(() => ({ first: document.activeElement === document.querySelector('#toc-list a'), cls: document.activeElement.className }));
+    expect(tFocus.first, 't still focuses the first TOC link', tFocus);
+
+    await page.click('#raw-math');
+    await page.waitForTimeout(600);
+    const raw = await tocInfo(page);
+    step('raw-math', { checked: await page.evaluate(() => document.getElementById('raw-math').checked), labels: subLabels(raw) });
+    expect(sameLabels(subLabels(raw), labels) && raw.every(t => t.subs.every(x => x.target)), 'labels and targets survive the raw-math toggle', subLabels(raw));
+    await page.click('#raw-math');
+    await page.waitForTimeout(600);
+    expect(sameLabels(subLabels(await tocInfo(page)), labels), 'labels unchanged after turning KaTeX back on');
+
+    const retrySec = split[0].sec;
+    await page.click(`#sec-${retrySec} .act-retry`);
+    await page.waitForTimeout(300);
+    await poll(page, () => { const s = RPT.state; const j = s.jobs[s.currentJobId]; return j.state === 'done' && !s.run; }, 30000, 'section retranslated');
+    await page.waitForTimeout(500);
+    const re = await tocInfo(page);
+    step('retry', { labels: subLabels(re)[retrySec], targets: re.find(t => t.sec === retrySec).subs.map(x => x.target) });
+    expect(sameLabels(subLabels(re), labels) && re.every(t => t.subs.every(x => x.target)), 'sub-headings rebuilt after a section retry', subLabels(re)[retrySec]);
+
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await page.click('#side-by-side');
+    await page.waitForTimeout(700);
+    const sbs = await page.evaluate(() => {
+      const li = [...document.querySelectorAll('#toc-list > li')].find(x => x.querySelector('.toc-sub-link'));
+      const a = li.querySelector(':scope > a').getBoundingClientRect();
+      const r0 = li.querySelector('.toc-sub-link').getBoundingClientRect();
+      const list = document.getElementById('toc-list');
+      return { sbs: document.getElementById('tr-layout').dataset.sbs, follows: r0.left >= a.right - 1 && Math.abs((r0.top + r0.bottom) / 2 - (a.top + a.bottom) / 2) < 8, rowScrolls: list.scrollWidth > list.clientWidth, scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth };
+    });
+    step('sbs-1100', sbs);
+    expect(sbs.sbs === '1' && sbs.follows && sbs.rowScrolls && sbs.scrollWidth <= sbs.innerWidth, 'side-by-side at 1100: sub-heading pills follow their section', sbs);
+    await page.screenshot({ path: path.join(OUT, 'toc-subheadings-sbs-1100.png') });
+    await page.click('#side-by-side');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(700);
+    const mob = await page.evaluate(() => {
+      const lis = [...document.querySelectorAll('#toc-list > li')];
+      const li = lis.find(x => x.querySelector('.toc-sub-link'));
+      const a = li.querySelector(':scope > a').getBoundingClientRect();
+      const subs = [...li.querySelectorAll('.toc-sub-link')].map(x => x.getBoundingClientRect());
+      const next = lis[lis.indexOf(li) + 1].querySelector(':scope > a').getBoundingClientRect();
+      const list = document.getElementById('toc-list');
+      return { follows: subs[0].left >= a.right - 1 && subs.every((r, i) => i === 0 || r.left >= subs[i - 1].right - 1) && next.left >= subs[subs.length - 1].right - 1, rowScrolls: list.scrollWidth > list.clientWidth, scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth };
+    });
+    step('mobile-390', mob);
+    expect(mob.follows && mob.rowScrolls && mob.scrollWidth <= mob.innerWidth, '390px: sub-heading pills follow their section without page overflow', mob);
+    await page.screenshot({ path: path.join(OUT, 'toc-subheadings-390.png') });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    await goHome(page);
+    await setCfg(page, { slowTranslate: true });
+    await start(page, ARXIV);
+    await page.waitForFunction(() => /^#result\//.test(location.hash) && !document.getElementById('view-result').hidden, null, { timeout: 10000 });
+    await page.click('#tab-translation');
+    const live = await poll(page, () => {
+      const s = RPT.state; const j = s.currentJobId && s.jobs[s.currentJobId];
+      if (!j) return null;
+      for (const c of j.chunks) {
+        if (c.status !== 'running') continue;
+        const n = document.querySelectorAll(`#toc-list > li[data-sec="${c.id}"] .toc-sub-link`).length;
+        if (n > 0) return { sec: c.id, subs: n, textLen: c.text.length, labels: [...document.querySelectorAll(`#toc-list > li[data-sec="${c.id}"] .toc-sub-link`)].map(a => a.textContent.trim()) };
+      }
+      return null;
+    }, 30000, 'sub-headings while streaming');
+    step('streaming', live);
+    expect(live && live.subs > 0, 'sub-headings appear while the section streams', live);
+    await waitEnd(page);
+    const fin = await tocInfo(page);
+    expect(sameLabels(subLabels(fin)[live.sec], labels[live.sec] || subLabels(fin)[live.sec]) && fin.every(t => t.subs.every(x => x.target)), 'final sub-headings after streaming', subLabels(fin)[live.sec]);
+  });
+
   await scenario('localhost-redirect', {}, async ({ page, step, expect, auth }) => {
     const localUrl = BASE.replace('127.0.0.1', 'localhost');
     if (localUrl === BASE) { step('skipped', { reason: 'BASE is not 127.0.0.1' }); return; }
@@ -1200,7 +1430,6 @@ const planBodyChecks = (list) => {
   await browser.close();
   const clone = JSON.parse(JSON.stringify(report));
   for (const s of clone.scenarios) delete s.authorize;
-  // 토큰 값(접근·갱신 토큰, id_token JWT)이 보고서에 남으면 스위트 전체를 실패로 처리한다
   report.tokenLeak = /oat-|rt-\d|eyJ[A-Za-z0-9_-]+\.eyJ/.test(JSON.stringify(clone));
   if (report.tokenLeak) report.scenarios.push({ name: 'token-leak-guard', cfg: {}, steps: [], fails: ['token string found in report.json'], errors: [], console: [] });
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 1));

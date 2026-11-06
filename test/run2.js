@@ -171,10 +171,13 @@ const cards = (page) => page.evaluate(() => [...document.querySelectorAll('#tr-m
     const tab = () => page.evaluate(() => ({ sel: document.querySelector('#tabs [aria-selected="true"]').id, hash: location.hash }));
     await page.keyboard.press('2'); await page.waitForTimeout(200); const t2 = await tab();
     await page.keyboard.press('3'); await page.waitForTimeout(200); const t3 = await tab();
+    await page.keyboard.press('4'); await page.waitForTimeout(200); const t4 = await tab();
     await page.keyboard.press('1'); await page.waitForTimeout(200); const t1 = await tab();
     await page.keyboard.press(','); await page.waitForTimeout(300); const settingsOpen = await page.evaluate(() => document.getElementById('settings').open);
     await page.keyboard.press('Escape'); await page.waitForTimeout(200);
-    step('shortcuts', { t2, t3, t1, settingsOpen });
+    step('shortcuts', { t2, t3, t4, t1, settingsOpen });
+    const want = [['tab-translation', 'translation', t2], ['tab-ideas', 'ideas', t3], ['tab-source', 'source', t4], ['tab-summary', null, t1]];
+    for (const [sel, route, t] of want) if (t.sel !== sel || (route && !t.hash.endsWith('/' + route))) report.scenarios[report.scenarios.length - 1].errors.push(`shortcut → ${sel}: ${JSON.stringify(t)}`);
     await page.evaluate(() => { location.hash = '#home'; }); await page.waitForTimeout(500);
     step('history-before', { items: await page.evaluate(() => document.querySelectorAll('#history-list li').length), stored: await page.evaluate(() => RPT.store.loadHistory().length) });
     await page.click('#history-list li .actions button:nth-child(2)'); await page.waitForTimeout(300);

@@ -23,7 +23,6 @@
 </main>
 <script>
   (function () {
-    // 콜백은 /auth/callback/ 아래에 있으므로 앱 루트는 두 단계 위다
     var root = new URL('../../', location.href);
     var target = root.href + location.search + '#auth-callback';
     try { document.getElementById('manual').href = target; } catch (e) {}

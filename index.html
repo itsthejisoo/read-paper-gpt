@@ -187,7 +187,8 @@
         <nav id="tabs" class="tabs" role="tablist" aria-label="결과 보기">
           <button type="button" role="tab" id="tab-summary" aria-selected="true" aria-controls="panel-summary">요약<kbd>1</kbd></button>
           <button type="button" role="tab" id="tab-translation" aria-selected="false" aria-controls="panel-translation">전문 번역<kbd>2</kbd></button>
-          <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source">원문<kbd>3</kbd></button>
+          <button type="button" role="tab" id="tab-ideas" aria-selected="false" aria-controls="panel-ideas">주제 제안<kbd>3</kbd></button>
+          <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source">원문<kbd>4</kbd></button>
         </nav>
       </div>
 
@@ -222,7 +223,7 @@
           <figure id="viz-pipeline" class="viz"></figure>
         </section>
         <section id="sec-results" class="sum-section">
-          <h3>결과(정확한 수치) 및 장점</h3>
+          <h3>결과 및 장점</h3>
           <div id="md-results" class="md"></div>
           <a id="pros-anchor" class="pc-anchor" href="#viz-proscons" hidden></a>
           <figure id="viz-metrics" class="viz"></figure>
@@ -235,7 +236,7 @@
         </section>
         <section id="sec-tech" class="sum-section">
           <h3>핵심기술</h3>
-          <div id="md-tech" class="md"></div>
+          <div id="md-tech" class="md" lang="en"></div>
           <figure id="viz-tech" class="viz"></figure>
         </section>
       </section>
@@ -266,6 +267,10 @@
             <p id="pdf-fallback" class="pane-fallback" hidden>이 사이트는 페이지 안에 표시할 수 없습니다. 새 탭에서 열어 주세요.</p>
           </aside>
         </div>
+      </section>
+
+      <section id="panel-ideas" class="result-inner" role="tabpanel" aria-labelledby="tab-ideas" hidden>
+        <div id="ideas-body" class="ideas"></div>
       </section>
 
       <section id="panel-source" class="result-inner" role="tabpanel" aria-labelledby="tab-source" hidden>
