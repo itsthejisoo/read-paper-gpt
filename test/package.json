@@ -1,0 +1,16 @@
+{
+  "name": "read-paper-together-test",
+  "private": true,
+  "description": "OpenAI 호출을 모의(mock)로 대체해 헤드리스 Chrome에서 앱 전체 흐름을 검증하는 스크립트",
+  "type": "commonjs",
+  "scripts": {
+    "test:flow": "node run.js",
+    "test:flow:file": "APP_URL=file://$PWD/../index.html node run.js",
+    "test:scenarios": "node run2.js",
+    "test:chatgpt": "node run3.js",
+    "test:proxy": "node proxy-test.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>앱으로 돌아가는 중…</title>
+<style>
+  html { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f9f9f7; color: #0b0b0b; }
+  main { text-align: center; padding: 24px; }
+  a { color: #1c5cab; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0d0d0d; color: #f0efec; }
+    a { color: #86b6ef; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p>앱으로 돌아가는 중…</p>
+  <p><a id="manual" href="../../">돌아가지 않으면 여기를 눌러 주세요.</a></p>
+</main>
+<script>
+  (function () {
+    // 콜백은 /auth/callback/ 아래에 있으므로 앱 루트는 두 단계 위다
+    var root = new URL('../../', location.href);
+    var target = root.href + location.search + '#auth-callback';
+    try { document.getElementById('manual').href = target; } catch (e) {}
+    location.replace(target);
+  })();
+</script>
+</body>
+</html>

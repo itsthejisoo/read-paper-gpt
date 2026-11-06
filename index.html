@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ko" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<title>논문 함께 읽기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/katex.min.css">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/18.1.1/lib/marked.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.4.17/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.19.0/contrib/auto-render.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+<dialog id="gate" class="modal modal--gate" aria-labelledby="gate-title">
+  <form id="gate-form" novalidate>
+    <button type="button" id="btn-gate-close" class="icon-btn gate-close" aria-label="닫기" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h9l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 4v5h5M7 12h8M7 16h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>논문 함께 읽기</span>
+    </div>
+    <h1 id="gate-title">GPT 로그인</h1>
+    <p class="subtitle">ChatGPT 계정이나 OpenAI API 키로 로그인하면 GPT가 논문을 번역하고 정리합니다.</p>
+    <div class="gate-chatgpt">
+      <button type="button" id="btn-chatgpt" class="btn-chatgpt">ChatGPT로 계속하기</button>
+      <p id="chatgpt-caption" class="help">ChatGPT Plus·Pro 플랜의 사용량으로 분석합니다. API 키나 별도 결제가 필요 없습니다.</p>
+      <p id="chatgpt-hint" class="note" role="note" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v5M12 16h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>ChatGPT 로그인은 http://127.0.0.1 주소로 열었을 때만 가능합니다. 터미널에서 <code>python3 serve.py</code> 를 실행한 뒤 http://127.0.0.1:8000 을 여세요.</span>
+      </p>
+    </div>
+    <div id="gate-or" class="gate-or">또는 API 키로 로그인</div>
+    <div class="field">
+      <label for="api-key">OpenAI API 키</label>
+      <div class="field-row">
+        <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" aria-describedby="gate-hint">
+        <button type="button" id="btn-key-toggle" class="icon-btn" aria-label="키 표시/숨기기" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        </button>
+      </div>
+      <p id="gate-hint" class="help">보통 <code>sk-</code>로 시작합니다. 프로젝트 키 등 다른 형식도 사용할 수 있습니다.</p>
+      <a class="link-ext ext" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">API 키 발급받기 → platform.openai.com/api-keys</a>
+      <p id="gate-error" class="error" role="alert" hidden></p>
+    </div>
+    <p class="note">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+      <span>키는 이 브라우저에만 저장됩니다. 서버로 전송되지 않으며 api.openai.com 호출에만 사용됩니다. ChatGPT 로그인 정보도 이 브라우저(127.0.0.1 주소)에만 저장됩니다.</span>
+    </p>
+    <button type="submit" id="btn-login" class="btn-primary" disabled>로그인</button>
+    <p class="fine">API 사용량은 OpenAI 계정에 과금됩니다.</p>
+  </form>
+</dialog>
+
+<div id="app">
+  <header id="topbar" class="topbar">
+    <a class="brand" href="#home">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h9l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 4v5h5M7 12h8M7 16h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>논문 함께 읽기</span>
+    </a>
+    <div class="topbar-actions">
+      <button type="button" id="model-badge" class="badge" title="모델 변경">-</button>
+      <button type="button" id="btn-settings" class="icon-btn" aria-label="설정">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+      <button type="button" id="btn-logout" class="btn-ghost" aria-label="로그아웃">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M15 8l4 4-4 4M19 12H9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="txt">로그아웃</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="view">
+    <section id="view-home" class="view">
+      <div class="hero">
+        <h2>논문 링크를 붙여넣거나 PDF를 올려 주세요</h2>
+        <p class="lead">전문 한글 번역과 구조화된 요약을 한 번에 만듭니다.</p>
+      </div>
+      <form id="analyze-form" class="card card--input" novalidate>
+        <div class="field">
+          <label for="url-input">논문 링크</label>
+          <div class="field-row">
+            <input id="url-input" type="url" placeholder="https://arxiv.org/abs/2401.12345 또는 PDF 주소" autocomplete="off" spellcheck="false">
+            <button type="button" id="btn-paste" class="btn-ghost btn-sm" hidden>붙여넣기</button>
+          </div>
+          <p class="help">arXiv abs 링크는 자동으로 PDF 링크로 바뀝니다.</p>
+          <p id="url-error" class="error" role="alert" hidden></p>
+        </div>
+        <div class="divider">또는</div>
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="PDF 파일 선택">
+          <input id="file-input" type="file" accept="application/pdf,.pdf" hidden>
+          <div id="dz-idle" class="dz-idle">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <strong>PDF를 여기에 끌어다 놓거나 클릭해서 선택</strong>
+            <span>PDF · 최대 50MB · 100페이지 이하 권장</span>
+          </div>
+          <div id="dz-file" class="dz-file" hidden>
+            <span class="chip"><span id="dz-file-name"></span><button type="button" id="btn-file-remove" class="chip-remove" aria-label="제거">✕</button></span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="model-select">모델</label>
+            <select id="model-select"></select>
+          </div>
+          <label class="check"><input type="checkbox" id="include-appendix" checked> 부록 포함</label>
+          <button type="submit" id="btn-start" class="btn-primary" disabled>분석 시작</button>
+          <kbd class="hint">⌘/Ctrl + Enter</kbd>
+        </div>
+        <p id="model-help" class="help model-help" role="alert" hidden>
+          <span id="model-help-text"></span>
+          <button type="button" id="btn-models-retry" class="btn-secondary btn-sm">모델 목록 다시 불러오기</button>
+        </p>
+      </form>
+
+      <section id="history" class="history">
+        <header>
+          <h3>최근 분석</h3>
+          <button type="button" id="btn-history-clear" class="btn-ghost btn-sm">전체 삭제</button>
+        </header>
+        <div id="storage-warning" class="banner" hidden>브라우저 저장 공간이 거의 찼습니다. 오래된 기록을 삭제해 주세요.</div>
+        <ul id="history-list"></ul>
+        <div id="history-empty" class="empty">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 9h8M8 13h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <strong>아직 분석한 논문이 없습니다.</strong>
+          <span>첫 논문 링크를 붙여넣어 시작해 보세요.</span>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-result" class="view" hidden>
+      <div id="limit-card" class="limit-card" role="alert" hidden>
+        <div class="limit-text">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v5M12 16h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <p>ChatGPT 플랜 사용 한도에 도달했습니다. ChatGPT 설정 → 사용량에서 한도를 확인하거나 조정한 뒤 다시 시도해 주세요.</p>
+        </div>
+        <div class="limit-actions">
+          <a id="limit-usage-link" class="btn-primary btn-sm" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener">사용량 관리</a>
+          <button type="button" id="limit-switch-key" class="btn-secondary btn-sm">API 키로 전환</button>
+        </div>
+      </div>
+      <div id="progress-strip" class="progress" data-state="outlining">
+        <div class="progress-inner">
+          <div class="progress-top">
+            <ol id="stage-rail" class="stage-rail">
+              <li class="stage" data-stage="outline" data-state="pending">1 구조 파악</li>
+              <li class="stage" data-stage="summary" data-state="pending">2 요약 생성</li>
+              <li class="stage" data-stage="translate" data-state="pending">3 전문 번역</li>
+            </ol>
+            <div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="전체 진행률"><div id="progress-fill" class="progress-fill"></div></div>
+            <p id="progress-text"></p>
+            <div class="progress-actions">
+              <button type="button" id="btn-progress-toggle" class="btn-ghost btn-sm" hidden>자세히</button>
+              <button type="button" id="btn-cancel" class="btn-danger-outline btn-sm">중단</button>
+              <button type="button" id="btn-retry-all" class="btn-secondary btn-sm" hidden>실패 섹션 모두 재시도</button>
+            </div>
+          </div>
+          <div id="section-chips" class="chip-row"></div>
+        </div>
+      </div>
+
+      <div class="result-inner">
+        <header id="result-header">
+          <a class="back" href="#home">← 홈</a>
+          <h2 id="paper-title"></h2>
+          <div id="export-menu" class="menu">
+            <button type="button" id="btn-export" class="btn-secondary btn-sm" aria-haspopup="menu" aria-expanded="false">내보내기 ▾</button>
+            <ul id="export-list" role="menu" hidden>
+              <li role="none"><button type="button" role="menuitem" class="btn-ghost" data-export="md">Markdown 다운로드</button></li>
+              <li role="none"><button type="button" role="menuitem" class="btn-ghost" data-export="html">HTML 다운로드</button></li>
+              <li role="none"><button type="button" role="menuitem" class="btn-ghost" data-export="copy-summary">요약 복사</button></li>
+              <li role="none"><button type="button" role="menuitem" class="btn-ghost" data-export="copy-all">전체 복사</button></li>
+            </ul>
+          </div>
+          <a id="source-link" class="ext" href="#" target="_blank" rel="noopener"></a>
+          <p id="result-meta" class="meta"></p>
+        </header>
+
+        <nav id="tabs" class="tabs" role="tablist" aria-label="결과 보기">
+          <button type="button" role="tab" id="tab-summary" aria-selected="true" aria-controls="panel-summary">요약<kbd>1</kbd></button>
+          <button type="button" role="tab" id="tab-translation" aria-selected="false" aria-controls="panel-translation">전문 번역<kbd>2</kbd></button>
+          <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source">원문<kbd>3</kbd></button>
+        </nav>
+      </div>
+
+      <section id="panel-summary" class="result-inner" role="tabpanel" aria-labelledby="tab-summary">
+        <article id="summary-head" class="card card--paper">
+          <h2 id="summary-title-ko" class="title-ko"></h2>
+          <p id="summary-title-en" class="title-en"></p>
+          <p id="summary-authors" class="authors"></p>
+          <span id="summary-venue" class="badge-venue" hidden></span>
+          <div class="tldr"><h4>한 줄 요약</h4><p id="summary-tldr"></p></div>
+          <ul id="summary-keywords" class="keywords"></ul>
+        </article>
+        <div id="summary-status" class="card summary-status" hidden>
+          <p id="summary-status-text"></p>
+          <button type="button" id="btn-summary-retry" class="btn-secondary btn-sm">요약 다시 생성</button>
+        </div>
+        <section id="glance" class="glance">
+          <h3>한눈에 보기</h3>
+          <ol id="glance-strip" class="glance-strip">
+            <li class="glance-step" data-kind="problem"><span class="lbl">문제</span><p id="glance-problem"></p></li>
+            <li class="glance-step" data-kind="method"><span class="lbl">방법</span><p id="glance-method"></p></li>
+            <li class="glance-step" data-kind="result"><span class="lbl">결과</span><p id="glance-result"></p></li>
+          </ol>
+        </section>
+        <section id="sec-problem" class="sum-section">
+          <h3>문제정의</h3>
+          <div id="md-problem" class="md"></div>
+        </section>
+        <section id="sec-method" class="sum-section">
+          <h3>해결방법(제안 기법)</h3>
+          <div id="md-method" class="md"></div>
+          <figure id="viz-pipeline" class="viz"></figure>
+        </section>
+        <section id="sec-results" class="sum-section">
+          <h3>결과(정확한 수치) 및 장점</h3>
+          <div id="md-results" class="md"></div>
+          <a id="pros-anchor" class="pc-anchor" href="#viz-proscons" hidden></a>
+          <figure id="viz-metrics" class="viz"></figure>
+          <figure id="viz-radar" class="viz"></figure>
+        </section>
+        <section id="sec-limits" class="sum-section">
+          <h3>단점 및 한계점</h3>
+          <div id="md-limits" class="md"></div>
+          <figure id="viz-proscons" class="viz"></figure>
+        </section>
+        <section id="sec-tech" class="sum-section">
+          <h3>핵심기술</h3>
+          <div id="md-tech" class="md"></div>
+          <figure id="viz-tech" class="viz"></figure>
+        </section>
+      </section>
+
+      <section id="panel-translation" class="result-inner" role="tabpanel" aria-labelledby="tab-translation" hidden>
+        <div class="tr-toolbar">
+          <label class="switch"><input type="checkbox" id="side-by-side"> 원문 나란히 보기</label>
+          <span class="sbs-note">넓은 화면에서 원문을 나란히 볼 수 있습니다.</span>
+          <button type="button" id="btn-retry-failed" class="btn-secondary btn-sm" hidden>실패 섹션 모두 재시도</button>
+          <div class="font-size" role="group" aria-label="글자 크기">
+            <button type="button" id="btn-font-dec" class="btn-ghost btn-sm" aria-label="글자 작게">가−</button>
+            <button type="button" id="btn-font-inc" class="btn-ghost btn-sm" aria-label="글자 크게">가+</button>
+          </div>
+          <label class="check"><input type="checkbox" id="raw-math"> 수식 원문 보기</label>
+        </div>
+        <div id="tr-layout" class="tr-layout" data-sbs="0">
+          <aside id="toc" class="toc" aria-label="목차">
+            <h4>목차</h4>
+            <ol id="toc-list"></ol>
+            <button type="button" id="btn-toc-top" class="btn-ghost btn-sm">맨 위로</button>
+          </aside>
+          <div id="tr-main" class="tr-main">
+            <div id="tr-empty" class="empty" hidden>번역할 섹션을 찾지 못했습니다. 다른 링크로 시도해 주세요.</div>
+          </div>
+          <aside id="pdf-pane" class="pdf-pane" hidden>
+            <div class="pane-bar"><span class="lbl">원문 PDF</span><a id="pdf-open-link" class="ext" href="#" target="_blank" rel="noopener">새 탭에서 열기</a></div>
+            <iframe id="pdf-frame" title="원문 PDF" hidden></iframe>
+            <p id="pdf-fallback" class="pane-fallback" hidden>이 사이트는 페이지 안에 표시할 수 없습니다. 새 탭에서 열어 주세요.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section id="panel-source" class="result-inner" role="tabpanel" aria-labelledby="tab-source" hidden>
+        <div class="pane-bar"><span class="lbl">원문 PDF · <span id="source-label"></span></span><a id="source-open-link" class="ext" href="#" target="_blank" rel="noopener">새 탭에서 열기</a></div>
+        <iframe id="source-frame" title="원문 PDF" hidden></iframe>
+        <div id="source-empty" class="empty" hidden>
+          <strong id="source-empty-text"></strong>
+          <input type="file" id="source-file-input" accept="application/pdf,.pdf" hidden>
+          <button type="button" id="btn-source-reselect" class="btn-secondary btn-sm" hidden>PDF 파일 선택</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="settings" class="modal" aria-labelledby="settings-title">
+    <form id="settings-form" method="dialog">
+      <h2 id="settings-title">설정</h2>
+      <fieldset id="set-account">
+        <legend>계정</legend>
+        <p id="account-text" class="account-text"></p>
+        <div class="account-actions">
+          <a id="account-usage-link" class="ext" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener" hidden>사용량 관리</a>
+          <button type="button" id="btn-switch-auth" class="btn-secondary btn-sm">다른 방법으로 로그인</button>
+        </div>
+      </fieldset>
+      <fieldset id="set-model-field">
+        <legend>모델</legend>
+        <select id="set-model"></select>
+        <p id="set-model-help" class="help">요약·번역 모두 이 모델을 사용합니다.</p>
+        <button type="button" id="btn-models-refresh" class="btn-secondary btn-sm" hidden>모델 목록 다시 불러오기</button>
+      </fieldset>
+      <fieldset id="set-effort">
+        <legend>추론 강도</legend>
+        <div class="segment">
+          <label><input type="radio" name="effort" value="none"><span>없음</span></label>
+          <label><input type="radio" name="effort" value="low"><span>낮음</span></label>
+          <label><input type="radio" name="effort" value="medium"><span>중간</span></label>
+          <label><input type="radio" name="effort" value="high"><span>높음</span></label>
+        </div>
+        <p class="help">구조 파악과 요약에만 적용됩니다. 번역은 항상 추론 없이 실행되며, 높을수록 느리고 비용이 큽니다.</p>
+      </fieldset>
+      <fieldset id="set-concurrency-field">
+        <legend>동시 번역 수</legend>
+        <div class="range-row">
+          <input type="range" id="set-concurrency" min="1" max="5" step="1" value="3" aria-label="동시 번역 수">
+          <output id="set-concurrency-value" for="set-concurrency">3</output>
+        </div>
+        <p class="help">429 오류가 잦으면 줄여 주세요.</p>
+      </fieldset>
+      <fieldset id="set-theme">
+        <legend>테마</legend>
+        <div class="segment">
+          <label><input type="radio" name="theme" value="auto"><span>자동</span></label>
+          <label><input type="radio" name="theme" value="light"><span>라이트</span></label>
+          <label><input type="radio" name="theme" value="dark"><span>다크</span></label>
+        </div>
+      </fieldset>
+      <fieldset id="set-fontscale">
+        <legend>번역 글자 크기</legend>
+        <div class="segment">
+          <label><input type="radio" name="fontscale" value="small"><span>작게</span></label>
+          <label><input type="radio" name="fontscale" value="normal"><span>보통</span></label>
+          <label><input type="radio" name="fontscale" value="large"><span>크게</span></label>
+        </div>
+      </fieldset>
+      <p class="help">변경 사항은 자동으로 저장됩니다.</p>
+      <footer>
+        <button type="button" id="btn-settings-reset" class="btn-ghost">기본값으로 되돌리기</button>
+        <button type="submit" id="btn-settings-close" class="btn-secondary">닫기</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirm" class="modal" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-body"></p>
+      <footer>
+        <button type="button" id="confirm-cancel" class="btn-secondary">취소</button>
+        <button type="button" id="confirm-ok" class="btn-danger">확인</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="welcome" class="modal modal--welcome" aria-labelledby="welcome-title">
+    <form method="dialog">
+      <h2 id="welcome-title">ChatGPT 플랜을 사용합니다</h2>
+      <p class="welcome-body">이 앱의 분석 요청은 회원님의 ChatGPT 플랜 사용량으로 처리됩니다. 사용량과 앱별 한도는 ChatGPT 설정 → 사용량에서 관리할 수 있습니다.</p>
+      <a class="ext" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener">사용량 관리</a>
+      <footer>
+        <button type="submit" id="welcome-ok" class="btn-primary" autofocus>확인</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast-region" aria-live="polite"></div>
+</div>
+
+<script src="prompts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
